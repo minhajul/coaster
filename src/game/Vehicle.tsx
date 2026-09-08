@@ -33,7 +33,7 @@ const MUSHROOM_HOP_Y = 6; // m/s upward hop from a mushroom bump
 const MUSHROOM_RADIUS_SQ = 1.5 * 1.5; // activation distance from mushroom
 const STAR_PICKUP_RADIUS = 2.4;
 const STAR_VISUAL_LIFT = 1.0; // stars float above the road
-const RESPAWN_STALL_SECONDS = 1.2;
+const RESPAWN_STALL_SECONDS = 2.5;
 // Finish line lives at the back-half of the lap (opposite the spawn).
 // We win when the kart crosses FINISH_T going forward after having
 // visited the pre-finish zone (> FINISH_T) earlier in this lap.
@@ -192,59 +192,38 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       );
 
       // ---- steering via angular velocity ----
-      // We set the FULL angular velocity (yaw + corrective roll/pitch)
-      // every frame. Setting x and z to zero would wipe any corrective
-      // roll the kart accumulated — so a flipped kart could never
-      // recover and would sit on its roof pressing forward into the
-      // road with no effect (the original "stuck after some time" bug).
+      // We apply yaw torque via setAngvel.y (NOT setRotation) so that
+      // Rapier physics can still process collisions and bounce the kart
+      // naturally. We only damp out unintended roll/pitch.
       const speed = Math.hypot(v.x, v.z);
       const speedFactor = Math.min(1, Math.max(0.4, speed / 3));
       const yawAngularVel =
         ((input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0)) *
         speedFactor;
-
-      // Compute a corrective roll/pitch angular velocity. When the kart
-      // is moderately tilted (< 75° off upright) we use the cross-
-      // product correction (smooth, physics-respecting). When it's
-      // severely flipped (the cross product becomes unreliable near
-      // 180°), we snap the rotation upright — the kart is in an
-      // unrecoverable physics state otherwise and would just sit on
-      // its roof forever, pressing forward into the road.
-      const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(scratch.quat);
-      const tilt = new THREE.Vector3().crossVectors(localUp, scratch.up);
-      const uprightStrength = 8.0;
-      const maxCorrection = 4.0; // rad/s
-
-      if (localUp.y < 0.25) {
-        // Severely flipped — snap upright while preserving yaw.
-        // Extract just the Y rotation from the current quaternion
-        // and re-apply it as a perfectly upright orientation.
-        const e = new THREE.Euler().setFromQuaternion(scratch.quat, "YXZ");
-        e.x = 0;
-        e.z = 0;
-        scratch.quat.setFromEuler(e);
-        bodyRef.current.setRotation(scratch.quat, true);
-        bodyRef.current.setAngvel({ x: 0, y: yawAngularVel, z: 0 }, true);
-      } else {
-        const uprightX = Math.max(
-          -maxCorrection,
-          Math.min(maxCorrection, tilt.x * uprightStrength),
-        );
-        const uprightZ = Math.max(
-          -maxCorrection,
-          Math.min(maxCorrection, tilt.z * uprightStrength),
-        );
-        bodyRef.current.setAngvel(
-          { x: uprightX, y: yawAngularVel, z: uprightZ },
-          true,
-        );
-      }
+      // Apply yaw velocity; zero out roll/pitch so the kart stays
+      // upright without clobbering Rapier's collision response.
+      bodyRef.current.setAngvel(
+        { x: 0, y: yawAngularVel, z: 0 },
+        true,
+      );
       // Read back the resulting yaw so velocity composition uses the
       // kart's CURRENT facing direction (post-Rapier step).
       const updatedR = bodyRef.current.rotation();
       scratch.quat.set(updatedR.x, updatedR.y, updatedR.z, updatedR.w);
       scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
       scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
+
+      // Light upright correction — only kicks in if the kart is
+      // significantly tilted (e.g. landed upside-down). We use a small
+      // torque, not a hard setRotation, so collisions still work.
+      const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(scratch.quat);
+      const tilt = new THREE.Vector3().crossVectors(localUp, scratch.up);
+      if (tilt.lengthSq() > 0.01) {
+        bodyRef.current.applyTorqueImpulse(
+          { x: tilt.x * 4 * delta, y: 0, z: tilt.z * 4 * delta },
+          true,
+        );
+      }
 
       // ---- compose final horizontal velocity ----
       // We blend the existing horizontal velocity toward the desired
