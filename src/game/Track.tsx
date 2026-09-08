@@ -43,8 +43,17 @@ function useRoadGeometry() {
     const indices: number[] = [];
 
     const segments = CURVE_SAMPLES.length;
-    const colorTop = new THREE.Color("#caa472"); // road top — sandy tan
-    const colorBottom = new THREE.Color("#8a6f4a"); // road bottom — dirt
+    // Bright Minecraft-style sandstone palette that pops against green
+    // grass. Top of the road uses a warm tan with a brighter highlight,
+    // sides & underside use a deeper brown so the road has clear volume.
+    const colorTopMain = new THREE.Color("#e6c388");
+    const colorTopEdge = new THREE.Color("#a47a3e");
+    const colorSide = new THREE.Color("#7a5a2f");
+    const colorBottom = new THREE.Color("#5a3f1c");
+
+    // Edge lane width (fraction of half-width painted as a darker
+    // border so the road reads as a defined ribbon, not a beige blob).
+    const edgeLane = TRACK_HALF_WIDTH * 0.18;
 
     for (let i = 0; i <= segments; i++) {
       const t = i / segments;
@@ -57,56 +66,82 @@ function useRoadGeometry() {
 
       const half = TRACK_HALF_WIDTH;
 
-      // Top vertex (road surface)
+      // Vertex 0: top-outer edge (dark border)
       positions.push(
         center.x + right.x * half,
         center.y + ROAD_THICKNESS,
         center.z + right.z * half,
       );
       normals.push(0, 1, 0);
-      colors.push(colorTop.r, colorTop.g, colorTop.b);
+      colors.push(colorTopEdge.r, colorTopEdge.g, colorTopEdge.b);
 
-      // Bottom vertex (underside)
+      // Vertex 1: top-inner main road surface (sandy tan)
+      positions.push(
+        center.x + right.x * (half - edgeLane),
+        center.y + ROAD_THICKNESS,
+        center.z + right.z * (half - edgeLane),
+      );
+      normals.push(0, 1, 0);
+      colors.push(colorTopMain.r, colorTopMain.g, colorTopMain.b);
+
+      // Vertex 2: top-inner other side (sandy tan)
+      positions.push(
+        center.x - right.x * (half - edgeLane),
+        center.y + ROAD_THICKNESS,
+        center.z - right.z * (half - edgeLane),
+      );
+      normals.push(0, 1, 0);
+      colors.push(colorTopMain.r, colorTopMain.g, colorTopMain.b);
+
+      // Vertex 3: top-outer edge other side (dark border)
       positions.push(
         center.x - right.x * half,
         center.y + ROAD_THICKNESS,
         center.z - right.z * half,
       );
       normals.push(0, 1, 0);
-      colors.push(colorTop.r, colorTop.g, colorTop.b);
+      colors.push(colorTopEdge.r, colorTopEdge.g, colorTopEdge.b);
 
-      // Bottom thickness vertex
+      // Vertex 4: bottom-outer edge (side wall — darker brown)
       positions.push(
         center.x - right.x * half,
-        center.y + ROAD_THICKNESS - ROAD_THICKNESS * 2,
+        center.y - ROAD_THICKNESS,
         center.z - right.z * half,
       );
       normals.push(0, -1, 0);
-      colors.push(colorBottom.r, colorBottom.g, colorBottom.b);
+      colors.push(colorSide.r, colorSide.g, colorSide.b);
 
+      // Vertex 5: bottom-outer other side
       positions.push(
         center.x + right.x * half,
-        center.y + ROAD_THICKNESS - ROAD_THICKNESS * 2,
+        center.y - ROAD_THICKNESS,
         center.z + right.z * half,
       );
       normals.push(0, -1, 0);
       colors.push(colorBottom.r, colorBottom.g, colorBottom.b);
     }
 
-    const ringSize = 4;
+    const ringSize = 6;
     for (let i = 0; i < segments; i++) {
       const a = i * ringSize;
       const b = a + 1;
       const c = a + 2;
       const d = a + 3;
-      // Top quad
-      indices.push(a, b, b + ringSize, a, b + ringSize, a + ringSize);
-      // Bottom quad (reversed winding)
-      indices.push(c, c + ringSize, d + ringSize, c, d + ringSize, d);
-      // Inner side
-      indices.push(b, c, c + ringSize, b, c + ringSize, b + ringSize);
-      // Outer side
-      indices.push(a, a + ringSize, d + ringSize, a, d + ringSize, d);
+      const e2 = a + 4;
+      const f = a + 5;
+      // Top dark-border quad (outer band on each side)
+      // Outer edge quad on side +r
+      indices.push(a, a + ringSize, b + ringSize, a, b + ringSize, b);
+      // Outer edge quad on side -r
+      indices.push(d + ringSize, c + ringSize, c, d + ringSize, c, d);
+      // Main road top quad (between the dark borders)
+      indices.push(b, b + ringSize, c + ringSize, b, c + ringSize, c);
+      // Side wall on +r (top edge down to bottom edge)
+      indices.push(a, a + ringSize, f + ringSize, a, f + ringSize, f);
+      // Side wall on -r
+      indices.push(d + ringSize, d, e2, d + ringSize, e2, e2 + ringSize);
+      // Bottom (dark)
+      indices.push(f, f + ringSize, e2 + ringSize, f, e2 + ringSize, e2);
     }
 
     geometry.setIndex(indices);
@@ -169,13 +204,41 @@ function HillFloor() {
 
     const grassA = new THREE.Color("#6fce4a");
     const grassB = new THREE.Color("#5cb83e");
+    // Pre-compute floor heights for every curve sample so we can flatten
+    // the floor near the road (it must never poke above the road ribbon,
+    // which sits at BASE_Y ≈ 4).
+    const ROAD_FLOOR_CLEARANCE = 14; // metres
+    const sampleMinDist = new Float32Array(pos.count);
+    const sampleHeights = new Float32Array(CURVE_SAMPLES.length);
+    for (let i = 0; i < CURVE_SAMPLES.length; i++) {
+      sampleHeights[i] = CURVE_SAMPLES[i].y;
+    }
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
-      // Carve a subtle valley along the track centre by attenuating
-      // hills in the middle, so the floor meets the road smoothly.
+      let best = Infinity;
+      // Sample every 6th point — 100 lookups/vertex is fast.
+      for (let j = 0; j < CURVE_SAMPLES.length; j += 6) {
+        const p = CURVE_SAMPLES[j];
+        const dx = p.x - x;
+        const dz = p.z - z;
+        const d = dx * dx + dz * dz;
+        if (d < best) best = d;
+      }
+      sampleMinDist[i] = Math.sqrt(best);
+    }
+
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const z = pos.getZ(i);
       const noise = valueNoise(x * 0.04, z * 0.04);
-      const y = (noise - 0.5) * 5;
+      // Hills with reduced amplitude (max ±1.5 m) so the road sits clearly
+      // above them. Then flatten anything within ROAD_FLOOR_CLEARANCE of
+      // the road so it can never poke up through the ribbon.
+      const amplitude = Math.max(0, sampleMinDist[i] - ROAD_FLOOR_CLEARANCE) /
+        ROAD_FLOOR_CLEARANCE;
+      const a = Math.min(1, amplitude);
+      const y = (noise - 0.5) * 3 * a;
       pos.setY(i, y);
       const mix = 0.5 + noise * 0.4;
       const c = grassA.clone().lerp(grassB, mix);

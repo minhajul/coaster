@@ -22,6 +22,9 @@ function buildControlPoints(): THREE.Vector3[] {
 
   // Pre-compute per-point hills. Mixing sines on different frequencies
   // gives a natural-looking rolling landscape instead of uniform bumps.
+  // The road is lifted well above the floor (BASE_Y = 4) so it is
+  // always clearly visible from any camera angle.
+  const BASE_Y = 4.0;
   for (let i = 0; i < count; i++) {
     const t = i / count;
     const angle = t * Math.PI * 2;
@@ -31,7 +34,8 @@ function buildControlPoints(): THREE.Vector3[] {
     const z = Math.sin(angle) * (radius + wobbleZ);
     // Hills: gentle primary wave + tiny secondary ripple.
     const y =
-      Math.sin(t * Math.PI * 6) * 3.2 + Math.cos(t * Math.PI * 11) * 1.2 + 1.2;
+      BASE_Y +
+      Math.sin(t * Math.PI * 6) * 3.2 + Math.cos(t * Math.PI * 11) * 1.2;
     pts.push(new THREE.Vector3(x, y, z));
   }
   return pts;
@@ -93,7 +97,7 @@ export function getSpawnPose(): {
   const forward = new THREE.Vector3().subVectors(p1, p0).normalize();
   const yaw = Math.atan2(forward.x, forward.z); // R3F uses Y-up rotation
   return {
-    position: [p0.x, p0.y + 1.6, p0.z],
+    position: [p0.x, p0.y + 1.8, p0.z],
     rotation: [0, yaw, 0],
   };
 }
