@@ -130,7 +130,8 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
   useFrame((_, deltaRaw) => {
     if (!bodyRef.current) return;
     // Freeze scene updates when not actively racing — modals (start, win,
-    // lose) and pause should keep the kart still so they feel stable.
+    // lose), the 3-2-1 countdown, and pause should all keep the kart
+    // still so they feel stable.
     if (status !== "racing" || paused) {
       bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
       bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);

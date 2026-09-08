@@ -79,12 +79,13 @@ export function App() {
 
 // ---------------------------------------------------------------------
 // TimerDriver — runs inside the Canvas so it can use useFrame. Each
-// frame, ticks the countdown if the race is in progress. We also play
-// audio cues on state transitions.
+// frame, ticks the race timer or the start countdown as appropriate.
+// We also play audio cues on state transitions.
 // ---------------------------------------------------------------------
 function TimerDriver() {
   const status = useGameStore((s) => s.status);
   const tickTimer = useGameStore((s) => s.tickTimer);
+  const tickCountdown = useGameStore((s) => s.tickCountdown);
   const prevStatus = useRef(status);
 
   useEffect(() => {
@@ -96,7 +97,11 @@ function TimerDriver() {
   }, [status]);
 
   useFrame((_, delta) => {
-    tickTimer(delta);
+    if (status === "countdown") {
+      tickCountdown(delta);
+    } else if (status === "racing") {
+      tickTimer(delta);
+    }
   });
   return null;
 }

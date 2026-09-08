@@ -20,6 +20,7 @@ export function HUD({ inputRef }: HUDProps) {
   const status = useGameStore((s) => s.status);
   const paused = useGameStore((s) => s.paused);
   const timeRemaining = useGameStore((s) => s.timeRemaining);
+  const countdown = useGameStore((s) => s.countdown);
   const stars = useGameStore((s) => s.stars);
   const totalStars = useGameStore((s) => s.totalStars);
   const progress = useGameStore((s) => s.progress);
@@ -109,6 +110,29 @@ export function HUD({ inputRef }: HUDProps) {
       lastBeepedSecRef.current = -1;
     }
   }, [wholeSec, status, paused]);
+
+  // ---- start-of-race 3-2-1-GO countdown beeps ----
+  // Played ONCE each time the integer ticks 3 → 2 → 1 → GO.
+  const lastCountdownTickRef = useRef<number>(-1);
+  useEffect(() => {
+    if (status !== "countdown") return;
+    const tick = Math.ceil(countdown); // 3, 2, 1
+    if (tick > 0 && tick !== lastCountdownTickRef.current) {
+      lastCountdownTickRef.current = tick;
+      // Higher pitch for "1" so the GO! feels exciting.
+      audio.blip(tick === 1 ? 880 : 660, 0.18, "square");
+    }
+    if (tick > 3) {
+      lastCountdownTickRef.current = -1;
+    }
+  }, [countdown, status]);
+  // When the countdown ends (status flips to racing), play a GO! blip.
+  useEffect(() => {
+    if (status === "racing") {
+      lastCountdownTickRef.current = -1;
+      audio.blip(1200, 0.3, "triangle");
+    }
+  }, [status]);
 
   return (
     <div
@@ -209,6 +233,9 @@ export function HUD({ inputRef }: HUDProps) {
         Controls: <b>WASD</b> / <b>Arrows</b> · <b>P</b> pause · <b>R</b> restart
       </div>
 
+      {/* ===================== 3-2-1-GO COUNTDOWN ===================== */}
+      {status === "countdown" && <CountdownOverlay countdown={countdown} />}
+
       {/* ===================== MODALS ===================== */}
       {status === "idle" && (
         <StartModal onStart={startRace} />
@@ -243,6 +270,46 @@ export function HUD({ inputRef }: HUDProps) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// CountdownOverlay — full-screen 3-2-1-GO pop. The number pops in
+// big, scales out, and gets replaced. On GO! the screen flashes green.
+// ---------------------------------------------------------------------
+function CountdownOverlay({ countdown }: { countdown: number }) {
+  // The store counts down from 3.001 → 0, so Math.ceil gives 3, 2, 1, 0.
+  const tick = Math.max(1, Math.ceil(countdown));
+  // Fractional progress 0..1 across the current second (for the
+  // pop-out scale animation). 0 means freshly arrived, 1 means about
+  // to roll over.
+  const fractional = 1 - (countdown - Math.floor(countdown));
+  const scale = 1 + fractional * 0.6; // grows from 1 → 1.6 over the second
+  const opacity = Math.max(0, 1 - fractional * 0.9); // fades 1 → 0.1
+
+  const label = tick > 0 ? String(tick) : "GO!";
+  const colour =
+    tick > 0
+      ? "from-yellow-300 to-orange-400 text-white"
+      : "from-green-400 to-emerald-500 text-white";
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+      aria-live="polite"
+    >
+      <div
+        className={`flex h-44 w-44 items-center justify-center rounded-full bg-gradient-to-br ${colour} shadow-2xl ring-8 ring-white/70`}
+        style={{
+          transform: `scale(${scale})`,
+          opacity,
+          transition: "none",
+        }}
+      >
+        <span className="font-chunky text-8xl font-black drop-shadow-lg">
+          {label}
+        </span>
+      </div>
     </div>
   );
 }

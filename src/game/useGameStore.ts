@@ -5,9 +5,11 @@ import { create } from "zustand";
 // stay snappy and re-renders are limited to the HUD layer.
 // =====================================================================
 
-export type GameState = "idle" | "racing" | "won" | "lost";
+export type GameState = "idle" | "countdown" | "racing" | "won" | "lost";
 
 export const RACE_DURATION_SECONDS = 120;
+/** Whole seconds for the 3-2-1-GO countdown shown after START. */
+export const COUNTDOWN_TOTAL = 3;
 
 interface GameStore {
   status: GameState;
@@ -15,6 +17,8 @@ interface GameStore {
   paused: boolean;
   /** Remaining time on the countdown clock (seconds). */
   timeRemaining: number;
+  /** Whole seconds remaining in the 3-2-1-GO countdown (3,2,1,0=GO). */
+  countdown: number;
   /** Total collectible stars gathered during the current race. */
   stars: number;
   /** Total stars available on the track for this race. */
@@ -23,12 +27,15 @@ interface GameStore {
   progress: number;
 
   // ---------------- actions ----------------
+  /** Begin the 3-2-1-GO countdown. Does NOT start the race yet. */
   startRace: () => void;
   resetRace: () => void;
-  /** Reset + start immediately, atomically — no idle flash. */
+  /** Reset + start immediately, atomically — used by restart shortcuts. */
   restartRace: () => void;
   setPaused: (p: boolean) => void;
   tickTimer: (deltaSeconds: number) => void;
+  /** Decrement the start countdown. Flips to racing when it reaches 0. */
+  tickCountdown: (deltaSeconds: number) => void;
   collectStar: () => void;
   setTotalStars: (n: number) => void;
   setProgress: (p: number) => void;
@@ -40,15 +47,20 @@ export const useGameStore = create<GameStore>((set) => ({
   status: "idle",
   paused: false,
   timeRemaining: RACE_DURATION_SECONDS,
+  countdown: 0,
   stars: 0,
   totalStars: 0,
   progress: 0,
 
   startRace: () =>
     set({
-      status: "racing",
+      status: "countdown",
       paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
+      // Start the countdown timer at the full duration so the first
+      // tick produces a value of COUNTDOWN_TOTAL whole-seconds on
+      // display (3.0 → ceil = 3).
+      countdown: COUNTDOWN_TOTAL + 0.001,
       stars: 0,
       totalStars: 0,
       progress: 0,
@@ -59,6 +71,7 @@ export const useGameStore = create<GameStore>((set) => ({
       status: "idle",
       paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
+      countdown: 0,
       stars: 0,
       totalStars: 0,
       progress: 0,
@@ -69,6 +82,7 @@ export const useGameStore = create<GameStore>((set) => ({
       status: "racing",
       paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
+      countdown: 0,
       stars: 0,
       totalStars: 0,
       progress: 0,
@@ -84,6 +98,21 @@ export const useGameStore = create<GameStore>((set) => ({
         return { timeRemaining: 0, status: "lost" };
       }
       return { timeRemaining: next };
+    }),
+
+  tickCountdown: (deltaSeconds) =>
+    set((s) => {
+      if (s.status !== "countdown") return s;
+      const next = s.countdown - deltaSeconds;
+      if (next <= 0) {
+        // Countdown finished — race begins NOW.
+        return {
+          status: "racing",
+          countdown: 0,
+          timeRemaining: RACE_DURATION_SECONDS,
+        };
+      }
+      return { countdown: next };
     }),
 
   collectStar: () => set((s) => ({ stars: s.stars + 1 })),
