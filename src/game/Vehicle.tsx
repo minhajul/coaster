@@ -8,7 +8,7 @@ import {
 } from "@react-three/rapier";
 import { useGameStore } from "./useGameStore";
 import { getSpawnPose, progressAlongTrack, TRACK_CURVE } from "./trackCurve";
-import { getStars } from "./Track";
+import { getStars, MUSHROOM_POSITIONS } from "./Track";
 
 // =====================================================================
 // Vehicle.tsx
@@ -24,11 +24,10 @@ import { getStars } from "./Track";
 const ACCEL = 28; // m/s² forward acceleration (kid-friendly snappy)
 const REVERSE = 18; // m/s² reverse / brake
 const MAX_SPEED = 22; // m/s top forward speed
-const TURN_RATE = 2.6; // radians / s
-const BOOST_IMPULSE = 12; // instant forward velocity kick
-const MUSHROOM_IMPULSE_Y = 9;
-const MUSHROOM_IMPULSE_FWD = 5;
-const STAR_PICKUP_RADIUS = 1.8;
+const TURN_RATE = 1.7; // radians / s — gentle steering for kids
+const MUSHROOM_HOP_Y = 6; // m/s upward hop from a mushroom bump
+const MUSHROOM_RADIUS_SQ = 1.5 * 1.5; // activation distance from mushroom
+const STAR_PICKUP_RADIUS = 2.4;
 const STAR_VISUAL_LIFT = 1.0; // stars float above the road
 const RESPAWN_STALL_SECONDS = 2.5;
 const LAP_PROGRESS_THRESHOLD = 0.85; // when kart has gone ~85% of loop
@@ -52,6 +51,7 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
   const bodyRef = useRef<RapierRigidBody>(null!);
   const kartGroup = useRef<THREE.Group>(null!);
   const { camera } = useThree();
+  const perspCamera = camera as THREE.PerspectiveCamera;
 
   // Tracks which stars have been collected in this race so we don't
   // award double-points when the kart lingers near a star.
@@ -59,6 +59,8 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
   const stallTimerRef = useRef(0);
   const lastProgressRef = useRef(0);
   const progressWrappedRef = useRef(false);
+  const consumedBoostsRef = useRef<Set<number>>(new Set());
+  const consumedMushroomAtRef = useRef<Map<number, number>>(new Map());
 
   const startRace = useGameStore((s) => s.startRace);
   const resetRace = useGameStore((s) => s.resetRace);
@@ -82,8 +84,12 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
 
   // Reset star collection when the race starts fresh.
   useEffect(() => {
-    if (status === "idle") {
+    // Respawn whenever we transition INTO racing — covers both the
+    // initial idle → racing start and the won/lost → racing restart.
+    if (status === "racing") {
       collectedStarsRef.current = new Set();
+      consumedBoostsRef.current = new Set();
+      consumedMushroomAtRef.current = new Map();
       stallTimerRef.current = 0;
       progressWrappedRef.current = false;
       const pose = getSpawnPose();
@@ -241,6 +247,50 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       }
     }
 
+    // ---- boost strip pickup (one-shot per strip) ----
+    for (let i = 0; i < BOOST_POSITIONS.length; i++) {
+      if (consumedBoostsRef.current.has(i)) continue;
+      const bp = BOOST_POSITIONS[i];
+      const bdx = bp.x - t.x;
+      const bdz = bp.z - t.z;
+      if (bdx * bdx + bdz * bdz < BOOST_ACCEPT_RADIUS_SQ) {
+        consumedBoostsRef.current.add(i);
+        // Apply a forward velocity kick + a satisfying upward hop.
+        bodyRef.current.setLinvel(
+          {
+            x: scratch.forward.x * BOOST_FORWARD_BONUS,
+            y: BOOST_UP_BONUS,
+            z: scratch.forward.z * BOOST_FORWARD_BONUS,
+          },
+          true,
+        );
+        audio.blip(660, 0.2, "triangle");
+      }
+    }
+
+    // ---- mushroom bouncy hop (one-shot per mushroom, short cooldown) ----
+    for (let i = 0; i < MUSHROOM_POSITIONS.length; i++) {
+      const mp = MUSHROOM_POSITIONS[i];
+      const mdx = mp.x - t.x;
+      const mdz = mp.z - t.z;
+      if (mdx * mdx + mdz * mdz < MUSHROOM_RADIUS_SQ) {
+        const now = performance.now();
+        const last = consumedMushroomAtRef.current.get(i) ?? 0;
+        if (now - last > 1500) {
+          consumedMushroomAtRef.current.set(i, now);
+          bodyRef.current.setLinvel(
+            {
+              x: scratch.forward.x * 5,
+              y: MUSHROOM_HOP_Y,
+              z: scratch.forward.z * 5,
+            },
+            true,
+          );
+          audio.blip(440, 0.15, "sine");
+        }
+      }
+    }
+
     // ---- progress & lap completion ----
     const progress = progressAlongTrack(scratch.pos);
     setProgress(progress);
@@ -279,25 +329,49 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
     }
 
     // ---- chase camera ----
-    // Camera target: a point in front of the kart, slightly above.
+    // Closer + faster than before so kids can see the road ahead. We
+    // also add a tiny look-ahead bias based on steering so the camera
+    // anticipates where the kart is going.
+    const steeringLookAhead =
+      (input.left ? -2 : 0) + (input.right ? 2 : 0);
     scratch.camTarget
       .copy(scratch.pos)
-      .add(scratch.forward.clone().multiplyScalar(4))
-      .add(new THREE.Vector3(0, 2.5, 0));
+      .add(scratch.forward.clone().multiplyScalar(5))
+      .add(scratch.right.clone().multiplyScalar(steeringLookAhead))
+      .add(new THREE.Vector3(0, 2.0, 0));
 
     // Desired camera position: behind + above the kart, rotated to match.
     scratch.camDesired
       .copy(scratch.pos)
-      .add(scratch.forward.clone().multiplyScalar(-9))
-      .add(new THREE.Vector3(0, 5, 0));
+      .add(scratch.forward.clone().multiplyScalar(-6.5))
+      .add(new THREE.Vector3(0, 3.8, 0));
 
-    // Position lerp (slow) + lookAt lerp (slightly faster).
-    camera.position.lerp(scratch.camDesired, Math.min(1, delta * 4));
+    // Position lerp (faster) + lookAt lerp (faster still) for snappy follow.
+    camera.position.lerp(scratch.camDesired, Math.min(1, delta * 8));
     const currentLook = new THREE.Vector3();
     camera.getWorldDirection(currentLook);
     currentLook.multiplyScalar(10).add(camera.position);
-    const newLook = currentLook.lerp(scratch.camTarget, Math.min(1, delta * 6));
+    const newLook = currentLook.lerp(scratch.camTarget, Math.min(1, delta * 10));
     camera.lookAt(newLook);
+
+    // Speed used by camera FOV punch and body tilt below.
+    const speedNow = Math.hypot(v.x, v.z);
+
+    // ---- body tilt for visual feedback ----
+    if (kartGroup.current) {
+      const tiltTarget =
+        (input.right ? -0.18 : input.left ? 0.18 : 0) *
+        Math.min(1, speedNow / 4);
+      kartGroup.current.rotation.z +=
+        (tiltTarget - kartGroup.current.rotation.z) * Math.min(1, delta * 6);
+    }
+
+    // ---- FOV punch at high speed ----
+    const fovTarget = 60 + Math.min(12, speedNow * 0.5);
+    if (Math.abs(perspCamera.fov - fovTarget) > 0.1) {
+      perspCamera.fov += (fovTarget - perspCamera.fov) * Math.min(1, delta * 3);
+      perspCamera.updateProjectionMatrix();
+    }
   });
 
   return (
@@ -444,46 +518,24 @@ export class AudioManager {
 
 export const audio = new AudioManager();
 
-// Convenience: simple "world helper" for boost strips — Vehicle can
-// call this when its body crosses a strip. We use a distance check
-// rather than Rapier sensor events to avoid extra component overhead.
-// (Strips are positioned at known samples — pre-cached here.)
-let BOOST_POSITIONS: THREE.Vector3[] | null = null;
-export function tryBoost(
-  kartPos: THREE.Vector3,
-  bodyRef: React.MutableRefObject<RapierRigidBody>,
-) {
-  if (!BOOST_POSITIONS) {
-    const out: THREE.Vector3[] = [];
-    for (let i = 0; i < 50 * 12; i += 50) {
-      out.push(TRACK_CURVE.getPointAt(i / TRACK_CURVE.getPoints().length / 1));
-    }
-    BOOST_POSITIONS = out;
-  }
-  for (const p of BOOST_POSITIONS) {
-    if (p.distanceToSquared(kartPos) < 12) {
-      const v = bodyRef.current.linvel();
-      const sp = Math.hypot(v.x, v.z);
-      if (sp < MAX_SPEED + 8) {
-        const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(
-          new THREE.Quaternion(
-            bodyRef.current.rotation().x,
-            bodyRef.current.rotation().y,
-            bodyRef.current.rotation().z,
-            bodyRef.current.rotation().w,
-          ),
-        );
-        bodyRef.current.applyImpulse(
-          {
-            x: fwd.x * BOOST_IMPULSE,
-            y: 0,
-            z: fwd.z * BOOST_IMPULSE,
-          },
-          true,
-        );
-        audio.blip(660, 0.18, "triangle");
-      }
-      break;
+// ---------------------------------------------------------------------
+// Boost strip detection — we use a deterministic set of positions
+// matching the visual strips in Track.tsx (same RNG/seed/stride) and
+// do a cheap per-frame distance check. The kart only boosts once per
+// strip and gets a small upward kick + forward velocity boost.
+// ---------------------------------------------------------------------
+import { mulberry32 as _rng } from "./mulberry32";
+const BOOST_STRIDE = 50;
+const BOOST_ACCEPT_RADIUS_SQ = 16; // 4 m
+const BOOST_FORWARD_BONUS = 14; // m/s added to target forward speed
+const BOOST_UP_BONUS = 6; // m/s upward kick for satisfying hop
+export const BOOST_POSITIONS: THREE.Vector3[] = (() => {
+  const rng = _rng(7);
+  const out: THREE.Vector3[] = [];
+  for (let i = 0; i < 600; i += BOOST_STRIDE) {
+    if (rng() < 0.55) {
+      out.push(TRACK_CURVE.getPointAt(i / 600).clone());
     }
   }
-}
+  return out;
+})();

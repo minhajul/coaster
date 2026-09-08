@@ -16,6 +16,7 @@ import {
   TRACK_CURVE,
   TRACK_HALF_WIDTH,
 } from "./trackCurve";
+import { mulberry32 } from "./mulberry32";
 
 // =====================================================================
 // Track.tsx
@@ -345,19 +346,6 @@ function HillFloor() {
   );
 }
 
-// Cheap deterministic PRNG so the level layout is identical every run.
-function mulberry32(seed: number) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 // ---------------------------------------------------------------------
 // Road mesh itself. Static — no rigid body needed because the kart's
 // collision comes from the side rails and the floor. We only need a
@@ -520,56 +508,53 @@ function SideRails() {
 }
 
 // ---------------------------------------------------------------------
-// Mushroom obstacles. Sitting on the road surface, they push the kart
-// up + slightly forward on touch. We use a sensor + a small static body.
+// Mushroom obstacles. Sitting on the road edges, they bounce the kart
+// up + forward on touch. Restitution is low so they don't launch the
+// kart into orbit. We force mushrooms to the SIDES of the road (not the
+// centre) so kids always have a clear line through.
 // ---------------------------------------------------------------------
-function Mushrooms() {
-  const { items } = useMemo(() => {
-    const rng = mulberry32(42);
-    const items: { pos: THREE.Vector3; tangent: THREE.Vector3 }[] = [];
-    const stride = 70; // every Nth sample has a mushroom chance
-    for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
-      if (rng() < 0.6) {
-        const center = CURVE_SAMPLES[i];
-        const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
-          .normalize();
-        // Offset slightly to side so it's not always dead-centre.
-        const right = new THREE.Vector3()
-          .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
-          .normalize();
-        const sideOff = (rng() - 0.5) * (TRACK_HALF_WIDTH * 0.6);
-        const pos = center
-          .clone()
-          .add(right.multiplyScalar(sideOff));
-        items.push({ pos, tangent });
-      }
+export const MUSHROOM_POSITIONS: THREE.Vector3[] = (() => {
+  const rng = mulberry32(42);
+  const out: THREE.Vector3[] = [];
+  for (let i = 0; i < CURVE_SAMPLES.length; i += 70) {
+    if (rng() < 0.7) {
+      const center = CURVE_SAMPLES[i];
+      const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
+        .normalize();
+      const right = new THREE.Vector3()
+        .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
+        .normalize();
+      // Always push mushrooms toward the edge so the centre stays clear.
+      const side = rng() < 0.5 ? -1 : 1;
+      const sideOff = side * (TRACK_HALF_WIDTH * 0.55 + 0.4);
+      const pos = center.clone().add(right.multiplyScalar(sideOff));
+      out.push(pos);
     }
-    return { items };
-  }, []);
+  }
+  return out;
+})();
 
+function Mushrooms() {
   return (
     <>
-      {items.map(({ pos, tangent }, i) => {
-        const yaw = Math.atan2(tangent.x, tangent.z);
+      {MUSHROOM_POSITIONS.map((pos, i) => {
         return (
           <group key={`mush-${i}`} position={[pos.x, pos.y + 0.7, pos.z]}>
-            <RigidBody type="fixed" colliders="cuboid" restitution={1.4}>
+            <RigidBody type="fixed" colliders="cuboid" restitution={0.4}>
               {/* Stem */}
               <mesh position={[0, -0.2, 0]} castShadow>
                 <boxGeometry args={[0.4, 0.6, 0.4]} />
                 <meshStandardMaterial color="#fff7d6" flatShading />
               </mesh>
-              {/* Cap */}
+              {/* Cap — smaller so it doesn't block the whole road */}
               <mesh position={[0, 0.4, 0]} castShadow>
-                <boxGeometry args={[1.4, 0.9, 1.4]} />
+                <boxGeometry args={[0.9, 0.7, 0.9]} />
                 <meshStandardMaterial
                   color={i % 2 ? "#ff4d4d" : "#b66bff"}
                   flatShading
                 />
               </mesh>
             </RigidBody>
-            {/* Hidden yaw helper group so the visual orientation is set. */}
-            <group rotation={[0, yaw, 0]} />
           </group>
         );
       })}
@@ -700,22 +685,32 @@ function Stars({ onCount }: { onCount: (n: number) => void }) {
     <group ref={groupRef}>
       {positions.map((p, i) => (
         <group key={`star-${i}`} position={[p.x, p.y, p.z]}>
-          {/* Star body (cross of two cubes = 4-point voxel star) */}
+          {/* Halo disc beneath the star to make it visible against the road */}
+          <mesh position={[0, -0.6, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.6, 1.1, 16]} />
+            <meshBasicMaterial
+              color="#ffd633"
+              transparent
+              opacity={0.55}
+              depthWrite={false}
+            />
+          </mesh>
+          {/* Star body (cross of two cubes = 4-point voxel star) — bigger */}
           <mesh castShadow>
-            <boxGeometry args={[0.7, 0.7, 0.3]} />
+            <boxGeometry args={[1.0, 1.0, 0.4]} />
             <meshStandardMaterial
               color="#ffd633"
               emissive="#ffaa00"
-              emissiveIntensity={0.6}
+              emissiveIntensity={0.7}
               flatShading
             />
           </mesh>
           <mesh rotation={[0, 0, Math.PI / 2]} castShadow>
-            <boxGeometry args={[0.7, 0.7, 0.3]} />
+            <boxGeometry args={[1.0, 1.0, 0.4]} />
             <meshStandardMaterial
               color="#ffd633"
               emissive="#ffaa00"
-              emissiveIntensity={0.6}
+              emissiveIntensity={0.7}
               flatShading
             />
           </mesh>
@@ -757,27 +752,75 @@ function FinishLine() {
     t.magFilter = THREE.NearestFilter;
     return t;
   }, []);
+  // Texture canvas extended with "FINISH" text so the sign has content.
+  const texFull = useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = 256;
+    c.height = 64;
+    const g = c.getContext("2d")!;
+    g.fillStyle = "#ff4d4d";
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = "#ffffff";
+    g.font = "bold 48px sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText("🏁  FINISH  🏁", c.width / 2, c.height / 2);
+    const t = new THREE.CanvasTexture(c);
+    t.minFilter = THREE.NearestFilter;
+    t.magFilter = THREE.NearestFilter;
+    return t;
+  }, []);
+
+  // Big on-road START arrow at t=0.04 so kids see which way to drive.
+  const arrow = TRACK_CURVE.getPointAt(0.04);
+  const arrowTan = TRACK_CURVE.getTangentAt(0.04).normalize();
+  const arrowYaw = Math.atan2(arrowTan.x, arrowTan.z);
+
   return (
-    <group position={[start.x, start.y + ROAD_THICKNESS + 0.02, start.z]} rotation={[0, yaw, 0]}>
-      <mesh>
-        <planeGeometry args={[TRACK_HALF_WIDTH * 2, 2.2]} />
-        <meshBasicMaterial map={tex} />
-      </mesh>
-      {/* Two flag posts */}
-      <mesh position={[TRACK_HALF_WIDTH, 1.5, 0]} castShadow>
-        <boxGeometry args={[0.2, 3, 0.2]} />
-        <meshStandardMaterial color="#888" flatShading />
-      </mesh>
-      <mesh position={[-TRACK_HALF_WIDTH, 1.5, 0]} castShadow>
-        <boxGeometry args={[0.2, 3, 0.2]} />
-        <meshStandardMaterial color="#888" flatShading />
-      </mesh>
-      {/* Big "START" sign */}
-      <mesh position={[0, 4, 0]} castShadow>
-        <boxGeometry args={[5, 1.2, 0.4]} />
-        <meshStandardMaterial color="#ff4d4d" flatShading />
-      </mesh>
-    </group>
+    <>
+      {/* Finish line itself — lifted higher to avoid z-fighting */}
+      <group
+        position={[start.x, start.y + ROAD_THICKNESS + 0.1, start.z]}
+        rotation={[0, yaw, 0]}
+      >
+        <mesh>
+          <planeGeometry args={[TRACK_HALF_WIDTH * 2, 2.2]} />
+          <meshBasicMaterial map={tex} polygonOffset polygonOffsetFactor={-1} />
+        </mesh>
+        {/* Two flag posts */}
+        <mesh position={[TRACK_HALF_WIDTH, 1.5, 0]} castShadow>
+          <boxGeometry args={[0.2, 3, 0.2]} />
+          <meshStandardMaterial color="#888" flatShading />
+        </mesh>
+        <mesh position={[-TRACK_HALF_WIDTH, 1.5, 0]} castShadow>
+          <boxGeometry args={[0.2, 3, 0.2]} />
+          <meshStandardMaterial color="#888" flatShading />
+        </mesh>
+        {/* "FINISH" sign */}
+        <mesh position={[0, 4, 0]} castShadow>
+          <planeGeometry args={[6, 1.4]} />
+          <meshBasicMaterial map={texFull} side={THREE.DoubleSide} toneMapped={false} />
+        </mesh>
+      </group>
+
+      {/* Huge on-road arrow pointing the direction of travel */}
+      <group
+        position={[arrow.x, arrow.y + ROAD_THICKNESS + 0.05, arrow.z]}
+        rotation={[0, arrowYaw, 0]}
+      >
+        <mesh rotation={[-Math.PI / 2, 0, 0]}>
+          <coneGeometry args={[2.8, 4, 3]} />
+          <meshStandardMaterial
+            color="#5cd66b"
+            emissive="#3aa050"
+            emissiveIntensity={0.5}
+            flatShading
+            polygonOffset
+            polygonOffsetFactor={-2}
+          />
+        </mesh>
+      </group>
+    </>
   );
 }
 

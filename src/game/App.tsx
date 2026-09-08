@@ -62,7 +62,7 @@ export function App() {
           args={["#bde7ff", "#6c4a2a", 0.4]}
         />
 
-        <Physics gravity={[0, -22, 0]} colliders={false} timeStep={1 / 60}>
+        <Physics gravity={[0, -14, 0]} colliders={false} timeStep={1 / 60}>
           <Track />
           <Vehicle
             inputRef={inputRef}

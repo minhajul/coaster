@@ -11,6 +11,8 @@ export const RACE_DURATION_SECONDS = 120;
 
 interface GameStore {
   status: GameState;
+  /** Whether the player has paused the current race. */
+  paused: boolean;
   /** Remaining time on the countdown clock (seconds). */
   timeRemaining: number;
   /** Total collectible stars gathered during the current race. */
@@ -23,6 +25,9 @@ interface GameStore {
   // ---------------- actions ----------------
   startRace: () => void;
   resetRace: () => void;
+  /** Reset + start immediately, atomically — no idle flash. */
+  restartRace: () => void;
+  setPaused: (p: boolean) => void;
   tickTimer: (deltaSeconds: number) => void;
   collectStar: () => void;
   setTotalStars: (n: number) => void;
@@ -33,6 +38,7 @@ interface GameStore {
 
 export const useGameStore = create<GameStore>((set) => ({
   status: "idle",
+  paused: false,
   timeRemaining: RACE_DURATION_SECONDS,
   stars: 0,
   totalStars: 0,
@@ -41,6 +47,7 @@ export const useGameStore = create<GameStore>((set) => ({
   startRace: () =>
     set({
       status: "racing",
+      paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
       stars: 0,
       progress: 0,
@@ -49,14 +56,26 @@ export const useGameStore = create<GameStore>((set) => ({
   resetRace: () =>
     set({
       status: "idle",
+      paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
       stars: 0,
       progress: 0,
     }),
 
+  restartRace: () =>
+    set({
+      status: "racing",
+      paused: false,
+      timeRemaining: RACE_DURATION_SECONDS,
+      stars: 0,
+      progress: 0,
+    }),
+
+  setPaused: (p) => set({ paused: p }),
+
   tickTimer: (deltaSeconds) =>
     set((s) => {
-      if (s.status !== "racing") return s;
+      if (s.status !== "racing" || s.paused) return s;
       const next = Math.max(0, s.timeRemaining - deltaSeconds);
       if (next <= 0) {
         return { timeRemaining: 0, status: "lost" };

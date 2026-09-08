@@ -1,11 +1,10 @@
-import { useEffect, useRef } from "react";
-import { useGameStore, formatTime, RACE_DURATION_SECONDS } from "./useGameStore";
+import { useEffect } from "react";
+import { useGameStore, formatTime } from "./useGameStore";
+import { audio } from "./Vehicle";
 
 // =====================================================================
-// HUD.tsx — pure DOM overlay (Tailwind). Three responsibilities:
-//   1. Display timer / progress / stars.
-//   2. Provide on-screen touch controls that mirror keyboard input.
-//   3. Show win / lose / start modals.
+// HUD.tsx — DOM overlay (Tailwind). Onboarding, gameplay HUD, modals,
+// touch controls, pause, and restart shortcut. Designed for kids 5–8.
 // =====================================================================
 
 interface HUDProps {
@@ -19,18 +18,34 @@ interface HUDProps {
 
 export function HUD({ inputRef }: HUDProps) {
   const status = useGameStore((s) => s.status);
+  const paused = useGameStore((s) => s.paused);
   const timeRemaining = useGameStore((s) => s.timeRemaining);
   const stars = useGameStore((s) => s.stars);
   const totalStars = useGameStore((s) => s.totalStars);
   const progress = useGameStore((s) => s.progress);
   const startRace = useGameStore((s) => s.startRace);
-  const resetRace = useGameStore((s) => s.resetRace);
+  const restartRace = useGameStore((s) => s.restartRace);
+  const setPaused = useGameStore((s) => s.setPaused);
 
-  // ---- touch button helpers (press = true, release = false) ----
+  // ---- keyboard: P or Esc to pause, R to restart ----
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (k === "p" || k === "escape") {
+        if (status === "racing") setPaused(!paused);
+      }
+      if (k === "r") {
+        restartRace();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [paused, status, restartRace, setPaused]);
+
+  // ---- touch button helpers ----
   // We use pointer capture so the button stays "pressed" even if the
   // finger slides off the visible button, and we only release on
-  // pointerup / pointercancel — not on pointerleave, which fires
-  // spuriously on touch devices when the finger moves a few pixels.
+  // pointerup / pointercancel.
   const bindBtn = (key: keyof typeof inputRef.current) => ({
     onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
       e.preventDefault();
@@ -51,7 +66,7 @@ export function HUD({ inputRef }: HUDProps) {
         /* ignore */
       }
     },
-    onPointerCancel: (e: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerCancel: () => {
       inputRef.current[key] = false;
     },
     onLostPointerCapture: () => {
@@ -59,7 +74,7 @@ export function HUD({ inputRef }: HUDProps) {
     },
   });
 
-  // Timer colour state
+  // ---- colour state for timer ----
   const urgent = timeRemaining <= 10 && timeRemaining > 0;
   const warning = timeRemaining <= 30 && timeRemaining > 10;
   const timerColour = urgent
@@ -73,29 +88,56 @@ export function HUD({ inputRef }: HUDProps) {
       ? "bg-amber-400/30 border-amber-400"
       : "bg-black/40 border-white/30";
 
+  // ---- countdown beeps in the last 3 seconds ----
+  const wholeSec = Math.ceil(timeRemaining);
+  useEffect(() => {
+    if (status !== "racing" || paused) return;
+    if (wholeSec <= 3 && wholeSec > 0 && timeRemaining - wholeSec < 0.05) {
+      audio.blip(wholeSec === 1 ? 440 : 660, 0.12, "square");
+    }
+  }, [wholeSec, status, paused, timeRemaining]);
+
   return (
-    <div className="pointer-events-none absolute inset-0 z-10 select-none font-chunky">
+    <div
+      className="pointer-events-none absolute inset-0 z-10 select-none font-chunky"
+      style={{ paddingBottom: "max(0px, env(safe-area-inset-bottom))" }}
+    >
       {/* ===================== TOP BAR ===================== */}
-      <div className="absolute left-0 right-0 top-0 flex items-start justify-between p-4">
+      <div className="absolute left-0 right-0 top-0 flex items-start justify-between gap-2 p-3">
         {/* Timer */}
         <div
-          className={`pointer-events-auto rounded-2xl border-2 px-5 py-3 shadow-lg backdrop-blur ${timerBg}`}
+          className={`pointer-events-auto rounded-2xl border-2 px-4 py-2 shadow-lg backdrop-blur ${timerBg}`}
         >
-          <div className="text-xs uppercase tracking-widest text-white/70">
+          <div className="text-[10px] uppercase tracking-widest text-white/70">
             Time
           </div>
-          <div className={`text-4xl font-bold tabular-nums ${timerColour}`}>
+          <div className={`text-3xl font-bold tabular-nums ${timerColour}`}>
             {formatTime(timeRemaining)}
           </div>
         </div>
 
+        {/* Pause / Restart buttons */}
+        {status === "racing" && (
+          <div className="pointer-events-auto flex flex-col gap-1">
+            <button
+              onClick={() => setPaused(true)}
+              className="rounded-full border-2 border-white/40 bg-black/40 px-4 py-2 text-2xl shadow-lg backdrop-blur hover:bg-black/60"
+              title="Pause (P)"
+            >
+              ⏸
+            </button>
+          </div>
+        )}
+
         {/* Star counter */}
-        <div className="pointer-events-auto rounded-2xl border-2 border-white/30 bg-black/40 px-4 py-3 text-center shadow-lg backdrop-blur">
-          <div className="text-xs uppercase tracking-widest text-white/70">
+        <div className="pointer-events-auto rounded-2xl border-2 border-white/30 bg-black/40 px-4 py-2 text-center shadow-lg backdrop-blur">
+          <div className="text-[10px] uppercase tracking-widest text-white/70">
             Stars
           </div>
-          <div className="flex items-center gap-2 text-3xl font-bold text-yellow-300">
-            <span className="text-4xl">⭐</span>
+          <div className="flex items-center gap-2 text-2xl font-bold text-yellow-300">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="#ffd633">
+              <polygon points="12,2 15,9 22,9 17,14 19,21 12,17 5,21 7,14 2,9 9,9" />
+            </svg>
             <span className="tabular-nums">
               {stars}/{totalStars}
             </span>
@@ -103,23 +145,32 @@ export function HUD({ inputRef }: HUDProps) {
         </div>
       </div>
 
-      {/* ===================== PROGRESS BAR ===================== */}
-      <div className="absolute left-1/2 top-4 w-2/3 max-w-xl -translate-x-1/2">
-        <div className="rounded-full border-2 border-white/40 bg-black/50 p-1.5 shadow-lg backdrop-blur">
+      {/* ===================== PROGRESS BAR (under top bar) ===================== */}
+      <div className="absolute left-1/2 top-[88px] w-11/12 max-w-xl -translate-x-1/2 md:top-3 md:w-1/3">
+        <div className="rounded-full border-2 border-white/30 bg-black/40 p-1 shadow backdrop-blur">
           <div
-            className="h-3 rounded-full bg-gradient-to-r from-green-400 via-yellow-300 to-red-500 transition-all duration-300"
+            className="h-2 rounded-full bg-gradient-to-r from-emerald-400 via-emerald-300 to-emerald-200 transition-all duration-300"
             style={{ width: `${Math.min(100, progress * 100)}%` }}
           />
         </div>
-        <div className="mt-1 text-center text-xs uppercase tracking-widest text-white/80">
-          🏁 Finish Line
+        <div className="mt-0.5 text-center text-[10px] uppercase tracking-widest text-white/80">
+          Lap 1 of 1
         </div>
       </div>
 
       {/* ===================== TOUCH CONTROLS ===================== */}
-      <div className="absolute bottom-6 left-0 right-0 flex items-end justify-between px-6 md:hidden">
+      <div
+        className="absolute bottom-0 left-0 right-0 flex items-end justify-between gap-3 px-4 pb-4 md:hidden"
+        style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
+      >
+        {/* Reverse (small) */}
+        <TouchButton
+          label="▼"
+          color="bg-orange-500 active:bg-orange-700"
+          {...bindBtn("reverse")}
+        />
         {/* Left + Right */}
-        <div className="flex gap-4">
+        <div className="flex gap-2">
           <TouchButton
             label="◀"
             color="bg-blue-500 active:bg-blue-700"
@@ -131,56 +182,51 @@ export function HUD({ inputRef }: HUDProps) {
             {...bindBtn("right")}
           />
         </div>
-        {/* Forward */}
+        {/* Forward (big) */}
         <TouchButton
           label="▲"
-          color="bg-green-500 active:bg-green-700"
+          color="bg-emerald-500 active:bg-emerald-700"
           size="big"
           {...bindBtn("forward")}
         />
       </div>
 
-      {/* Desktop hint: subtle key hints at bottom-right */}
-      <div className="absolute bottom-4 right-4 hidden rounded-xl border border-white/20 bg-black/40 px-4 py-2 text-xs text-white/80 backdrop-blur md:block">
-        Controls: <b>WASD</b> / <b>Arrow Keys</b>
+      {/* ===================== KEYBOARD HINT (desktop only) ===================== */}
+      <div className="absolute bottom-3 right-4 hidden rounded-xl border border-white/20 bg-black/40 px-3 py-1.5 text-xs text-white/80 backdrop-blur md:block">
+        Controls: <b>WASD</b> / <b>Arrows</b> · <b>P</b> pause · <b>R</b> restart
       </div>
 
       {/* ===================== MODALS ===================== */}
       {status === "idle" && (
-        <Modal
-          title="ChunkCoaster"
-          subtitle="A blocky voxel race for tiny pilots!"
-          emoji="🎮"
-          primaryLabel="START RACE"
-          primaryAction={startRace}
-          accent="bg-green-500 hover:bg-green-600"
-        />
+        <StartModal onStart={startRace} />
       )}
       {status === "won" && (
-        <Modal
-          title="YOU DID IT!"
-          subtitle={`You finished with ${stars} ⭐ stars!`}
-          emoji="🏆"
-          primaryLabel="RACE AGAIN"
-          primaryAction={() => {
-            resetRace();
-            // Restart on next tick.
-            setTimeout(startRace, 50);
+        <WinModal
+          stars={stars}
+          total={totalStars}
+          onRestart={() => {
+            restartRace();
+            setPaused(false);
           }}
-          accent="bg-yellow-400 hover:bg-yellow-500 text-yellow-900"
         />
       )}
       {status === "lost" && (
-        <Modal
-          title="Time's Up!"
-          subtitle="Give it another try!"
-          emoji="🚀"
-          primaryLabel="TRY AGAIN"
-          primaryAction={() => {
-            resetRace();
-            setTimeout(startRace, 50);
+        <LoseModal
+          stars={stars}
+          total={totalStars}
+          progress={progress}
+          onRestart={() => {
+            restartRace();
+            setPaused(false);
           }}
-          accent="bg-pink-500 hover:bg-pink-600"
+        />
+      )}
+      {paused && status === "racing" && (
+        <PauseModal
+          onResume={() => setPaused(false)}
+          onRestart={() => {
+            restartRace();
+          }}
         />
       )}
     </div>
@@ -188,7 +234,7 @@ export function HUD({ inputRef }: HUDProps) {
 }
 
 // ---------------------------------------------------------------------
-// Small touch button with big hit area. Hidden on desktop via the parent.
+// Touch button
 // ---------------------------------------------------------------------
 function TouchButton({
   label,
@@ -203,8 +249,8 @@ function TouchButton({
   return (
     <button
       type="button"
-      className={`pointer-events-auto flex items-center justify-center rounded-full border-4 border-white/70 text-5xl font-bold text-white shadow-2xl transition-colors ${color} ${
-        size === "big" ? "h-28 w-28" : "h-20 w-20"
+      className={`pointer-events-auto flex items-center justify-center rounded-3xl border-4 border-white/70 text-4xl font-bold text-white shadow-2xl transition-transform active:scale-95 ${color} ${
+        size === "big" ? "h-24 w-24" : "h-20 w-20"
       }`}
       style={{ touchAction: "none" }}
       {...handlers}
@@ -215,62 +261,177 @@ function TouchButton({
 }
 
 // ---------------------------------------------------------------------
-// Modal dialog (start / win / lose)
+// Modals
 // ---------------------------------------------------------------------
-function Modal({
-  title,
-  subtitle,
-  emoji,
-  primaryLabel,
-  primaryAction,
-  accent,
-}: {
-  title: string;
-  subtitle: string;
-  emoji: string;
-  primaryLabel: string;
-  primaryAction: () => void;
-  accent: string;
-}) {
-  // Unlock the audio context on first user gesture (browser policy).
-  const handleClick = () => {
-    try {
-      new (window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext)();
-    } catch {
-      /* ignore */
-    }
-    primaryAction();
-  };
+function StartModal({ onStart }: { onStart: () => void }) {
   return (
-    <div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur">
-      <div className="m-4 max-w-md rounded-3xl border-4 border-white/30 bg-gradient-to-br from-indigo-500 to-purple-600 p-8 text-center text-white shadow-2xl">
-        <div className="mb-4 text-7xl animate-wiggle">{emoji}</div>
-        <h1 className="mb-2 text-4xl font-bold drop-shadow-md">{title}</h1>
-        <p className="mb-6 text-lg opacity-90">{subtitle}</p>
-        <button
-          onClick={handleClick}
-          className={`rounded-2xl px-8 py-4 text-2xl font-bold shadow-lg transition-colors ${accent}`}
-        >
-          {primaryLabel}
-        </button>
-        <div className="mt-4 text-xs uppercase tracking-widest opacity-70">
-          {formatTime(RACE_DURATION_SECONDS)} to finish the lap
+    <ModalShell>
+      <div className="mb-3 text-6xl">🎮</div>
+      <h1 className="mb-1 text-4xl font-bold drop-shadow-md">ChunkCoaster</h1>
+      <p className="mb-1 text-base opacity-95">A blocky race for tiny pilots!</p>
+      <div className="mx-auto mb-4 max-w-xs rounded-2xl bg-white/10 p-3 text-left text-sm leading-snug">
+        <div>
+          🏁 <b>Goal:</b> drive around the track and cross the
+          <b> finish line</b> before 2 minutes run out!
         </div>
+        <div>
+          ⭐ <b>Stars:</b> grab them for bonus points!
+        </div>
+        <div>
+          🟡 <b>Yellow stripes</b> = speed boost
+        </div>
+        <div>
+          🍄 <b>Mushrooms</b> = bounce!
+        </div>
+      </div>
+      <div className="mb-4 flex justify-center gap-3 text-2xl">
+        <Key>W</Key>
+        <Key>A</Key>
+        <Key>S</Key>
+        <Key>D</Key>
+        <span className="self-center text-xs opacity-70">or</span>
+        <Key>←</Key>
+        <Key>↑</Key>
+        <Key>↓</Key>
+        <Key>→</Key>
+      </div>
+      <button
+        onClick={() => {
+          audio.ensure();
+          onStart();
+        }}
+        className="rounded-2xl bg-green-500 px-10 py-4 text-2xl font-bold shadow-lg transition-colors hover:bg-green-600"
+      >
+        START RACE
+      </button>
+    </ModalShell>
+  );
+}
+
+function WinModal({
+  stars,
+  total,
+  onRestart,
+}: {
+  stars: number;
+  total: number;
+  onRestart: () => void;
+}) {
+  const msg =
+    stars === total && total > 0
+      ? "PERFECT! All stars!"
+      : stars > total / 2
+        ? "Amazing run!"
+        : stars > 0
+          ? "Nice work!"
+          : "You finished! Try to grab more ⭐ next time!";
+  return (
+    <ModalShell>
+      <div className="mb-2 text-6xl">🏆</div>
+      <h1 className="mb-2 text-4xl font-bold drop-shadow-md">YOU DID IT!</h1>
+      <p className="mb-1 text-lg opacity-95">{msg}</p>
+      <p className="mb-5 text-2xl">
+        ⭐ {stars}/{total} stars
+      </p>
+      <button
+        onClick={onRestart}
+        className="rounded-2xl bg-yellow-400 px-10 py-4 text-2xl font-bold text-yellow-900 shadow-lg transition-colors hover:bg-yellow-500"
+      >
+        RACE AGAIN
+      </button>
+    </ModalShell>
+  );
+}
+
+function LoseModal({
+  stars,
+  total,
+  progress,
+  onRestart,
+}: {
+  stars: number;
+  total: number;
+  progress: number;
+  onRestart: () => void;
+}) {
+  const pct = Math.round(progress * 100);
+  return (
+    <ModalShell>
+      <div className="mb-2 text-6xl">⏰</div>
+      <h1 className="mb-2 text-4xl font-bold drop-shadow-md">Time&apos;s Up!</h1>
+      <p className="mb-1 text-lg opacity-95">
+        You made it <b>{pct}%</b> around the track
+      </p>
+      <p className="mb-5 text-xl opacity-90">
+        and grabbed <b>⭐ {stars}</b>
+        {total > 0 && ` of ${total}`} stars!
+      </p>
+      <button
+        onClick={onRestart}
+        className="rounded-2xl bg-pink-500 px-10 py-4 text-2xl font-bold shadow-lg transition-colors hover:bg-pink-600"
+      >
+        TRY AGAIN
+      </button>
+    </ModalShell>
+  );
+}
+
+function PauseModal({
+  onResume,
+  onRestart,
+}: {
+  onResume: () => void;
+  onRestart: () => void;
+}) {
+  return (
+    <ModalShell>
+      <div className="mb-3 text-6xl">⏸</div>
+      <h1 className="mb-5 text-4xl font-bold drop-shadow-md">Paused</h1>
+      <div className="flex flex-col gap-3">
+        <button
+          onClick={onResume}
+          className="rounded-2xl bg-green-500 px-10 py-4 text-2xl font-bold shadow-lg transition-colors hover:bg-green-600"
+        >
+          ▶ RESUME
+        </button>
+        <button
+          onClick={onRestart}
+          className="rounded-2xl bg-pink-500 px-10 py-3 text-xl font-bold shadow-lg transition-colors hover:bg-pink-600"
+        >
+          ↻ RESTART
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/60 p-4 backdrop-blur">
+      <div className="w-full max-w-md rounded-3xl border-4 border-white/30 bg-gradient-to-br from-indigo-500 to-purple-600 p-6 text-center text-white shadow-2xl">
+        {children}
       </div>
     </div>
   );
 }
 
-// Prevent default touch scrolling on the canvas / overlay while playing.
+function Key({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex h-9 min-w-[2.25rem] items-center justify-center rounded-lg border-2 border-white/40 bg-black/30 px-2 font-mono text-base font-bold shadow">
+      {children}
+    </span>
+  );
+}
+
+// Prevent default touch scrolling/zooming on the page.
 export function useNoScrollOnCanvas() {
   useEffect(() => {
     const prevent = (e: TouchEvent) => {
       if ((e.target as HTMLElement)?.closest("button")) return;
       e.preventDefault();
     };
-    document.addEventListener("touchmove", prevent, { passive: false });
+    const opts = { passive: false } as const;
+    document.addEventListener("touchmove", prevent, opts);
     return () => document.removeEventListener("touchmove", prevent);
   }, []);
 }
