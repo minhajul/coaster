@@ -760,11 +760,15 @@ function Stars({ onCount }: { onCount: (n: number) => void }) {
 }
 
 // ---------------------------------------------------------------------
-// Checkered finish line. Sits at sample 0 of the curve.
+// Checkered finish line. Sits at sample 0.5 of the curve — directly
+// opposite the spawn point — so the player starts at the START arrow
+// and only sees "FINISH" after completing a full lap.
 // ---------------------------------------------------------------------
 function FinishLine() {
-  const start = TRACK_CURVE.getPointAt(0);
-  const tangent = TRACK_CURVE.getTangentAt(0).normalize();
+  // Place finish at t=0.5 (halfway around the loop, opposite spawn).
+  const FINISH_T = 0.5;
+  const start = TRACK_CURVE.getPointAt(FINISH_T);
+  const tangent = TRACK_CURVE.getTangentAt(FINISH_T).normalize();
   const right = new THREE.Vector3()
     .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
     .normalize();

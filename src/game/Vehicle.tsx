@@ -34,7 +34,12 @@ const MUSHROOM_RADIUS_SQ = 1.5 * 1.5; // activation distance from mushroom
 const STAR_PICKUP_RADIUS = 2.4;
 const STAR_VISUAL_LIFT = 1.0; // stars float above the road
 const RESPAWN_STALL_SECONDS = 2.5;
-const LAP_PROGRESS_THRESHOLD = 0.85; // when kart has gone ~85% of loop
+// Finish line lives at the back-half of the lap (opposite the spawn).
+// We win when the kart crosses FINISH_T going forward after having
+// visited the pre-finish zone (> FINISH_T) earlier in this lap.
+// MUST stay in sync with FinishLine in Track.tsx.
+const FINISH_T = 0.5;
+const PRE_FINISH_T = 0.95; // "kart must have passed this far"
 
 interface VehicleProps {
   /** External input state (from HUD touch buttons + keyboard). */
@@ -61,6 +66,9 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
   const lastProgressRef = useRef(0);
   const consumedBoostsRef = useRef<Set<number>>(new Set());
   const consumedMushroomAtRef = useRef<Map<number, number>>(new Map());
+  // Whether the kart has reached the pre-finish zone this lap. Set
+  // once progress > PRE_FINISH_T, cleared on lap win / new race.
+  const reachedPreFinishRef = useRef(false);
   // Throttle HUD progress updates to ~10 Hz so the bar doesn't stutter.
   const progressTickRef = useRef(0);
 
@@ -94,6 +102,7 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       consumedMushroomAtRef.current = new Map();
       stallTimerRef.current = 0;
       lastProgressRef.current = 0;
+      reachedPreFinishRef.current = false;
       const pose = getSpawnPose();
       if (bodyRef.current) {
         bodyRef.current.setTranslation(
@@ -310,12 +319,21 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       setProgress(progress);
     }
     if (
-      progress < 0.2 &&
-      lastProgressRef.current > LAP_PROGRESS_THRESHOLD &&
-      lastProgressRef.current > 0.9
+      progress > PRE_FINISH_T &&
+      lastProgressRef.current <= PRE_FINISH_T
     ) {
-      // Debounce: require the previous reading to be very close to 1.0
-      // so a momentary coarse-to-fine search misread cannot false-win.
+      // Kart just entered the pre-finish zone → it has gone ~95% of
+      // the lap. From here, crossing back through FINISH_T wins.
+      reachedPreFinishRef.current = true;
+    }
+    if (
+      reachedPreFinishRef.current &&
+      progress < FINISH_T &&
+      lastProgressRef.current >= FINISH_T
+    ) {
+      // Kart just crossed the FINISH line going forward after
+      // completing the pre-finish stretch. That's a full lap.
+      reachedPreFinishRef.current = false;
       winRace();
     }
     lastProgressRef.current = progress;
@@ -340,6 +358,10 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
           bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
           bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
           stallTimerRef.current = 0;
+          // Resets the lap-progress tracker so a respawn can't trip a
+          // stale "I crossed FINISH" detection on the very next frame.
+          reachedPreFinishRef.current = false;
+          lastProgressRef.current = 0;
           // Distinct downward blip so the player hears "you got reset"
           // (not the star-collect sound).
           audio.blip(180, 0.18, "sine");
