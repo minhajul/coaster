@@ -6,10 +6,22 @@ import { create } from "zustand";
 // =====================================================================
 
 export type GameState = "idle" | "countdown" | "racing" | "won" | "lost";
+export type CameraMode = "chase" | "hood" | "far";
 
 export const RACE_DURATION_SECONDS = 120;
 /** Whole seconds for the 3-2-1-GO countdown shown after START. */
 export const COUNTDOWN_TOTAL = 3;
+
+const BEST_TIME_KEY = "chunkcoaster_best_time";
+
+function loadBestTime(): number | null {
+  try {
+    const val = localStorage.getItem(BEST_TIME_KEY);
+    return val ? parseFloat(val) : null;
+  } catch {
+    return null;
+  }
+}
 
 interface GameStore {
   status: GameState;
@@ -25,6 +37,18 @@ interface GameStore {
   totalStars: number;
   /** Lap progress 0..1 (drives the HUD progress bar). */
   progress: number;
+  /** Current speed in km/h for the speedometer. */
+  speedKmh: number;
+  /** Whether boost is currently active. */
+  isBoosted: boolean;
+  /** Audio mute toggle. */
+  muted: boolean;
+  /** Current camera mode. */
+  cameraMode: CameraMode;
+  /** Personal best time in seconds. */
+  bestTime: number | null;
+  /** Last race completion time in seconds. */
+  lastTime: number | null;
 
   // ---------------- actions ----------------
   /** Begin the 3-2-1-GO countdown. Does NOT start the race yet. */
@@ -39,6 +63,10 @@ interface GameStore {
   collectStar: () => void;
   setTotalStars: (n: number) => void;
   setProgress: (p: number) => void;
+  setSpeedKmh: (s: number) => void;
+  setIsBoosted: (b: boolean) => void;
+  toggleMute: () => void;
+  cycleCameraMode: () => void;
   winRace: () => void;
   loseRace: () => void;
 }
@@ -51,19 +79,25 @@ export const useGameStore = create<GameStore>((set) => ({
   stars: 0,
   totalStars: 0,
   progress: 0,
+  speedKmh: 0,
+  isBoosted: false,
+  muted: false,
+  cameraMode: "chase",
+  bestTime: loadBestTime(),
+  lastTime: null,
 
   startRace: () =>
     set({
       status: "countdown",
       paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
-      // Start the countdown timer at the full duration so the first
-      // tick produces a value of COUNTDOWN_TOTAL whole-seconds on
-      // display (3.0 → ceil = 3).
       countdown: COUNTDOWN_TOTAL + 0.001,
       stars: 0,
       totalStars: 0,
       progress: 0,
+      speedKmh: 0,
+      isBoosted: false,
+      lastTime: null,
     }),
 
   resetRace: () =>
@@ -75,6 +109,8 @@ export const useGameStore = create<GameStore>((set) => ({
       stars: 0,
       totalStars: 0,
       progress: 0,
+      speedKmh: 0,
+      isBoosted: false,
     }),
 
   restartRace: () =>
@@ -86,6 +122,9 @@ export const useGameStore = create<GameStore>((set) => ({
       stars: 0,
       totalStars: 0,
       progress: 0,
+      speedKmh: 0,
+      isBoosted: false,
+      lastTime: null,
     }),
 
   setPaused: (p) => set({ paused: p }),
@@ -105,7 +144,6 @@ export const useGameStore = create<GameStore>((set) => ({
       if (s.status !== "countdown") return s;
       const next = s.countdown - deltaSeconds;
       if (next <= 0) {
-        // Countdown finished — race begins NOW.
         return {
           status: "racing",
           countdown: 0,
@@ -118,7 +156,31 @@ export const useGameStore = create<GameStore>((set) => ({
   collectStar: () => set((s) => ({ stars: s.stars + 1 })),
   setTotalStars: (n) => set({ totalStars: n }),
   setProgress: (p) => set({ progress: Math.min(1, Math.max(0, p)) }),
-  winRace: () => set({ status: "won" }),
+  setSpeedKmh: (s) => set({ speedKmh: Math.round(s) }),
+  setIsBoosted: (b) => set({ isBoosted: b }),
+  toggleMute: () => set((s) => ({ muted: !s.muted })),
+  cycleCameraMode: () =>
+    set((s) => {
+      const modes: CameraMode[] = ["chase", "hood", "far"];
+      const nextIdx = (modes.indexOf(s.cameraMode) + 1) % modes.length;
+      return { cameraMode: modes[nextIdx] };
+    }),
+
+  winRace: () =>
+    set((s) => {
+      const elapsed = Math.round((RACE_DURATION_SECONDS - s.timeRemaining) * 10) / 10;
+      let newBest = s.bestTime;
+      if (newBest === null || elapsed < newBest) {
+        newBest = elapsed;
+        try {
+          localStorage.setItem(BEST_TIME_KEY, String(elapsed));
+        } catch {
+          /* ignore */
+        }
+      }
+      return { status: "won", lastTime: elapsed, bestTime: newBest };
+    }),
+
   loseRace: () => set({ status: "lost" }),
 }));
 
@@ -127,4 +189,10 @@ export function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
+export function formatTimePrecise(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = (seconds % 60).toFixed(1);
+  return `${m.toString().padStart(2, "0")}:${s.padStart(4, "0")}`;
 }

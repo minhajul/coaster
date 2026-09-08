@@ -2,119 +2,140 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import {
-  CuboidCollider,
   RapierRigidBody,
   RigidBody,
+  RoundCuboidCollider,
 } from "@react-three/rapier";
 import { useGameStore } from "./useGameStore";
-import { getSpawnPose, progressAlongTrack, TRACK_CURVE } from "./trackCurve";
+import {
+  getSpawnPose,
+  progressAlongTrack,
+  ROAD_THICKNESS,
+  TRACK_CURVE,
+  TRACK_HALF_WIDTH,
+} from "./trackCurve";
 import {
   BOOST_POSITIONS,
   MUSHROOM_POSITIONS,
   STAR_POSITIONS,
 } from "./Track";
+import { audio } from "./audio";
+
+export { audio } from "./audio";
 
 // =====================================================================
 // Vehicle.tsx
-// Owns the kart rigid body, all input (keyboard + on-screen buttons),
-// and the dynamic chase camera. Also handles:
-//   • Star collection via distance-based sensor checks
-//   • Boost strip detection via distance to boost samples
-//   • Auto-respawn if the kart stalls off the road
-//   • Lap completion → winRace()
+// Owns the kart rigid body, arcade handling, responsive 3D slope
+// climbing, dynamic camera (chase / hood / far), animated spinning
+// wheels, driver character, particle & sound sync, and item pickups.
 // =====================================================================
 
-// ---- tuning constants ----
-// Acceleration is modeled as an exponential approach toward a target
-// speed. ACCEL_TIME is the time constant in seconds — roughly how
-// long it takes to reach ~63% of the target. A smaller value feels
-// snappy, a larger value feels smooth and floaty. 0.55s is a good
-// kid-friendly balance: the kart responds quickly to input but never
-// feels jerky.
-const ACCEL_TIME = 0.55;
-const REVERSE_TIME = 0.45;
-const MAX_SPEED = 22; // m/s top forward speed
-const MAX_REVERSE = 13; // m/s top reverse speed
-const TURN_RATE = 1.7; // radians / s — gentle steering for kids
-const MUSHROOM_HOP_Y = 6; // m/s upward hop from a mushroom bump
-const MUSHROOM_RADIUS_SQ = 1.5 * 1.5; // activation distance from mushroom
-const STAR_PICKUP_RADIUS = 2.4;
-const STAR_VISUAL_LIFT = 1.0; // stars float above the road
-const RESPAWN_STALL_SECONDS = 1.2;
-// Finish line lives at the back-half of the lap (opposite the spawn).
-// We win when the kart crosses FINISH_T going forward after having
-// visited the pre-finish zone (> FINISH_T) earlier in this lap.
-// MUST stay in sync with FinishLine in Track.tsx.
-const FINISH_T = 0.5;
-const PRE_FINISH_T = 0.95; // "kart must have passed this far"
+// ---- handling tuning constants ----
+const ACCEL_TIME = 0.45;
+const REVERSE_TIME = 0.35;
+const MAX_SPEED = 24; // m/s forward top speed (~86 km/h)
+const MAX_REVERSE = 12; // m/s reverse top speed
+const TURN_RATE = 2.0; // radians / s
+const MUSHROOM_HOP_Y = 7.5; // m/s upward hop
+const MUSHROOM_RADIUS_SQ = 2.2 * 2.2;
+const STAR_PICKUP_RADIUS = 2.6;
+const STAR_VISUAL_LIFT = 1.0;
+const BOOST_ACCEPT_RADIUS_SQ = 18; // 4.2m radius
 
 interface VehicleProps {
-  /** External input state (from HUD touch buttons + keyboard). */
   inputRef: React.MutableRefObject<{
     forward: boolean;
     left: boolean;
     right: boolean;
     reverse: boolean;
   }>;
-  /** Tells parent when a star is collected (so it can play audio). */
-  onCollect?: () => void;
+  onCollect?: (combo: number) => void;
+  kartPosRef?: React.MutableRefObject<THREE.Vector3>;
+  kartQuatRef?: React.MutableRefObject<THREE.Quaternion>;
+  kartYawRef?: React.MutableRefObject<number>;
+  collectedStarsRef?: React.MutableRefObject<Set<number>>;
 }
 
-export function Vehicle({ inputRef, onCollect }: VehicleProps) {
+export function Vehicle({
+  inputRef,
+  onCollect,
+  kartPosRef,
+  kartQuatRef,
+  kartYawRef,
+  collectedStarsRef,
+}: VehicleProps) {
   const bodyRef = useRef<RapierRigidBody>(null!);
   const kartGroup = useRef<THREE.Group>(null!);
+  const driverHeadRef = useRef<THREE.Group>(null!);
+  const frontLeftWheelRef = useRef<THREE.Group>(null!);
+  const frontRightWheelRef = useRef<THREE.Group>(null!);
+  const backLeftWheelRef = useRef<THREE.Mesh>(null!);
+  const backRightWheelRef = useRef<THREE.Mesh>(null!);
+
   const { camera } = useThree();
   const perspCamera = camera as THREE.PerspectiveCamera;
 
-  // Tracks which stars have been collected in this race so we don't
-  // award double-points when the kart lingers near a star.
-  const collectedStarsRef = useRef<Set<number>>(new Set());
+  const internalCollectedStarsRef = useRef<Set<number>>(new Set());
+  const activeCollectedStars = collectedStarsRef || internalCollectedStarsRef;
+
   const stallTimerRef = useRef(0);
   const lastProgressRef = useRef(0);
   const consumedBoostsRef = useRef<Set<number>>(new Set());
   const consumedMushroomAtRef = useRef<Map<number, number>>(new Map());
-  // Whether the kart has reached the pre-finish zone this lap. Set
-  // once progress > PRE_FINISH_T, cleared on lap win / new race.
+  const boostTimerRef = useRef(0);
+  const hopTimerRef = useRef(0);
+  const hopVyRef = useRef(0);
   const reachedPreFinishRef = useRef(false);
-  // Yaw angle (radians) of the kart, integrated each frame from
-  // steering input. Since rotations are locked via lockRotations,
-  // Rapier does not rotate the body for us — we manage yaw directly.
   const yawRef = useRef(0);
-  // Throttle HUD progress updates to ~10 Hz so the bar doesn't stutter.
   const progressTickRef = useRef(0);
+  const wheelAngleRef = useRef(0);
 
   const startRace = useGameStore((s) => s.startRace);
   const collectStar = useGameStore((s) => s.collectStar);
   const winRace = useGameStore((s) => s.winRace);
   const setProgress = useGameStore((s) => s.setProgress);
+  const setSpeedKmh = useGameStore((s) => s.setSpeedKmh);
+  const setIsBoosted = useGameStore((s) => s.setIsBoosted);
   const status = useGameStore((s) => s.status);
   const paused = useGameStore((s) => s.paused);
+  const cameraMode = useGameStore((s) => s.cameraMode);
 
-  // ---- one-time respawn at start ----
+  // ---- Spawn setup on mount ----
   useEffect(() => {
     const pose = getSpawnPose();
+    yawRef.current = pose.rotation[1];
+    if (kartYawRef) kartYawRef.current = pose.rotation[1];
     if (bodyRef.current) {
       bodyRef.current.setTranslation(
         { x: pose.position[0], y: pose.position[1], z: pose.position[2] },
         true,
       );
+      bodyRef.current.setRotation(
+        new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(...pose.rotation),
+        ),
+        true,
+      );
       bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
       bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
     }
-  }, []);
+  }, [kartYawRef]);
 
-  // Reset star collection when the race starts fresh.
+  // ---- Reset race state ----
   useEffect(() => {
-    // Respawn whenever we transition INTO racing — covers both the
-    // initial idle → racing start and the won/lost → racing restart.
     if (status === "racing") {
-      collectedStarsRef.current = new Set();
+      activeCollectedStars.current.clear();
       consumedBoostsRef.current = new Set();
       consumedMushroomAtRef.current = new Map();
+      boostTimerRef.current = 0;
+      hopTimerRef.current = 0;
+      hopVyRef.current = 0;
       stallTimerRef.current = 0;
       lastProgressRef.current = 0;
       reachedPreFinishRef.current = false;
       const pose = getSpawnPose();
+      yawRef.current = pose.rotation[1];
+      if (kartYawRef) kartYawRef.current = pose.rotation[1];
       if (bodyRef.current) {
         bodyRef.current.setTranslation(
           { x: pose.position[0], y: pose.position[1], z: pose.position[2] },
@@ -128,13 +149,11 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         );
         bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
         bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
-        // Reset our tracked yaw to match the spawn rotation.
-        yawRef.current = pose.rotation[1];
       }
     }
-  }, [status]);
+  }, [status, activeCollectedStars, kartYawRef]);
 
-  // Reusable scratch objects (avoid per-frame allocations).
+  // Scratch objects for per-frame math
   const scratch = useMemo(
     () => ({
       pos: new THREE.Vector3(),
@@ -142,7 +161,6 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       right: new THREE.Vector3(),
       up: new THREE.Vector3(0, 1, 0),
       quat: new THREE.Quaternion(),
-      euler: new THREE.Euler(),
       camTarget: new THREE.Vector3(),
       camDesired: new THREE.Vector3(),
     }),
@@ -151,15 +169,16 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
 
   useFrame((_, deltaRaw) => {
     if (!bodyRef.current) return;
-    // Freeze scene updates when not actively racing — modals (start, win,
-    // lose), the 3-2-1 countdown, and pause should all keep the kart
-    // still so they feel stable.
-    if (status !== "racing" || paused) {
+    const delta = Math.min(deltaRaw, 1 / 30);
+    const isRacing = status === "racing" && !paused;
+
+    if (!isRacing) {
       bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
       bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      audio.updateEngine(0, false, false, false);
       return;
     }
-    const delta = Math.min(deltaRaw, 1 / 30); // clamp to keep physics stable on lag
+
     const t = bodyRef.current.translation();
     const r = bodyRef.current.rotation();
     const v = bodyRef.current.linvel();
@@ -167,112 +186,169 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
     scratch.pos.set(t.x, t.y, t.z);
     scratch.quat.set(r.x, r.y, r.z, r.w);
 
-    // Current facing direction (kart's local -Z is forward by convention)
+    if (kartPosRef) kartPosRef.current.copy(scratch.pos);
+    if (kartQuatRef) kartQuatRef.current.copy(scratch.quat);
+    if (kartYawRef) kartYawRef.current = yawRef.current;
+
     scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
     scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
 
     const input = inputRef.current;
-    const isRacing = status === "racing";
 
-    // ---- throttle & brake ----
-    // Arcade-style direct velocity control. We compute the kart's current
-    // forward speed (in XZ plane only — vertical is left to physics),
-    // accelerate/decelerate it, then re-apply ONLY along the forward axis.
-    // We never zero out the perpendicular component or fully reset the
-    // velocity, so downhill momentum and lateral micro-bumps are preserved
-    // and the kart can never get "wedged" into a stuck state.
-    if (isRacing) {
-      // Project velocity onto forward, but only the horizontal component
-      // so going up/down hills doesn't bleed the speed reading.
-      const horizVel = new THREE.Vector3(v.x, 0, v.z);
-      const forwardSpeed = scratch.forward.dot(horizVel);
+    // ---- Boost timer ----
+    if (boostTimerRef.current > 0) {
+      boostTimerRef.current -= delta;
+    }
+    const isBoosted = boostTimerRef.current > 0;
+    setIsBoosted(isBoosted);
 
-      // Target forward speed — what the kart WANTS to be at right now.
-      let targetForward = 0;
-      if (input.forward) targetForward = MAX_SPEED;
-      if (input.reverse) targetForward = -MAX_REVERSE;
-      // No input → coast toward zero (gentle).
-
-      // ---- exponential approach toward target ----
-      // Instead of a fixed accel * delta (which gives linear ramps and
-      // jerky direction changes), we blend current speed toward target
-      // by a frame-rate-independent factor. This gives a buttery-smooth
-      // exponential ramp: 63% of remaining gap closed every ACCEL_TIME
-      // seconds. Releasing the throttle has the same smooth ramp-down.
-      // Time constants chosen so the kart feels responsive (0.55s to
-      // ~63% of top speed) but never twitchy.
-      const tau =
-        targetForward >= 0
-          ? ACCEL_TIME
-          : REVERSE_TIME;
-      // alpha = 1 - exp(-delta / tau), frame-rate-independent.
-      const alpha = 1 - Math.exp(-delta / tau);
-      const newForwardSpeed = forwardSpeed + (targetForward - forwardSpeed) * alpha;
-      const clampedForward = Math.max(
-        -MAX_REVERSE,
-        Math.min(MAX_SPEED, newForwardSpeed),
-      );
-
-      // ---- steering: directly control yaw via setRotation ----
-      // Earlier we tried setAngvel-based steering + torque-impulse
-      // upright correction, but the impulse was wiped the next frame
-      // and the kart could roll onto its roof. Now we lock rotations
-      // (lockRotations on RigidBody) and drive yaw directly with
-      // setRotation. This gives bulletproof arcade handling:
-      // • kart can never flip over
-      // • steering always works (no setAngvel integration lag)
-      // • collisions still work because translation is free
-      const speed = Math.hypot(v.x, v.z);
-      const speedFactor = Math.min(1, Math.max(0.4, speed / 3));
-      // Read current yaw from the (locked) rotation, add input, write back.
-      // Rapier integration of yaw doesn't apply because rotations are
-      // locked, so setAngvel would do nothing for yaw — we just integrate
-      // the angle ourselves here.
-      yawRef.current +=
-        ((input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0)) *
-        speedFactor *
-        delta;
-      const yaw = yawRef.current;
-      scratch.quat.setFromAxisAngle(scratch.up, yaw);
-      bodyRef.current.setRotation(scratch.quat, true);
-      scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
-      scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
-
-      // ---- compose final horizontal velocity ----
-      // We blend the existing horizontal velocity toward the desired
-      // forward velocity along the kart's facing axis. Some lateral is
-      // preserved (grip), but most is bled off so the kart can't
-      // permanently slide sideways into a stuck state.
-      const newForwardVel = scratch.forward
-        .clone()
-        .multiplyScalar(clampedForward);
-      // Preserve a small fraction of lateral velocity (kid-friendly drift
-      // feel) but never all of it — that would cause permanent slides.
-      const lateralVel = scratch.right
-        .clone()
-        .multiplyScalar(scratch.right.dot(horizVel) * 0.05);
-      const desiredHorizontal = newForwardVel.add(lateralVel);
-      bodyRef.current.setLinvel(
-        { x: desiredHorizontal.x, y: v.y, z: desiredHorizontal.z },
-        true,
-      );
+    // ---- Hop timer & vertical physics ----
+    if (hopTimerRef.current > 0) {
+      hopTimerRef.current -= delta;
+      hopVyRef.current -= 24 * delta;
     }
 
-    // ---- star pickup (distance based, cheap) ----
+    // ---- Throttle, speed & slope integration ----
+    const progress = progressAlongTrack(scratch.pos);
+    const trackTan = TRACK_CURVE.getTangentAt(progress).normalize();
+    const trackPt = TRACK_CURVE.getPointAt(progress);
+    const roadSurfaceY = trackPt.y + ROAD_THICKNESS;
+
+    const horizVel = new THREE.Vector3(v.x, 0, v.z);
+    const forwardSpeed = scratch.forward.dot(horizVel);
+
+    const topSpeed = isBoosted ? MAX_SPEED * 1.55 : MAX_SPEED;
+    let targetForward = 0;
+    if (input.forward) targetForward = topSpeed;
+    if (input.reverse) targetForward = -MAX_REVERSE;
+
+    const tau = targetForward >= 0 ? (isBoosted ? 0.22 : ACCEL_TIME) : REVERSE_TIME;
+    const alpha = 1 - Math.exp(-delta / tau);
+    const newForwardSpeed = forwardSpeed + (targetForward - forwardSpeed) * alpha;
+    const clampedForward = Math.max(
+      -MAX_REVERSE,
+      Math.min(topSpeed, newForwardSpeed),
+    );
+
+    // Steering with speed sensitivity & curve-following assist
+    const speedHoriz = Math.hypot(v.x, v.z);
+    const speedFactor = Math.min(1, Math.max(0.35, speedHoriz / 3));
+    const steerDir = (input.left ? -TURN_RATE : 0) + (input.right ? TURN_RATE : 0);
+
+    if (input.left || input.right) {
+      // Manual player steering has total priority
+      yawRef.current += steerDir * speedFactor * delta;
+    } else if (clampedForward > 1.5) {
+      // Gentle curve-following assist when driving forward without active steering
+      const trackYaw = Math.atan2(trackTan.x, trackTan.z);
+      let diffYaw = trackYaw - yawRef.current;
+      while (diffYaw > Math.PI) diffYaw -= Math.PI * 2;
+      while (diffYaw < -Math.PI) diffYaw += Math.PI * 2;
+      yawRef.current += diffYaw * Math.min(1, delta * 2.8);
+    }
+
+    scratch.quat.setFromAxisAngle(scratch.up, yawRef.current);
+    bodyRef.current.setRotation(scratch.quat, true);
+    scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
+    scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
+
+    // 3D Slope following along facing vector
+    const horizLen = Math.hypot(trackTan.x, trackTan.z);
+    const trackSlope = horizLen > 0.001 ? trackTan.y / horizLen : 0;
+    const forwardTrackDot =
+      (scratch.forward.x * trackTan.x + scratch.forward.z * trackTan.z) /
+      (horizLen || 1);
+    const slopeAlongFacing = trackSlope * forwardTrackDot;
+    const slopeVy = clampedForward * slopeAlongFacing;
+
+    const distAboveRoad = t.y - roadSurfaceY;
+    const isGrounded = distAboveRoad <= 0.6 && distAboveRoad >= -0.8;
+
+    let vy = v.y;
+    if (hopTimerRef.current > 0) {
+      vy = hopVyRef.current;
+    } else if (isGrounded) {
+      vy = slopeVy - 1.2;
+    } else if (t.y < roadSurfaceY - 0.2) {
+      vy = Math.max(v.y, 4.0);
+    }
+
+    // Composed velocity with grip & slight drift
+    const newForwardVel = scratch.forward
+      .clone()
+      .multiplyScalar(clampedForward);
+    const lateralVel = scratch.right
+      .clone()
+      .multiplyScalar(scratch.right.dot(horizVel) * 0.06);
+    const desiredHorizontal = newForwardVel.add(lateralVel);
+
+    // ---- Lateral containment within track borders ----
+    const trackRight = new THREE.Vector3()
+      .crossVectors(trackTan, new THREE.Vector3(0, 1, 0))
+      .normalize();
+    const toKart = new THREE.Vector3(
+      scratch.pos.x - trackPt.x,
+      0,
+      scratch.pos.z - trackPt.z,
+    );
+    const lateralDist = toKart.dot(trackRight);
+    const maxLateral = TRACK_HALF_WIDTH - 0.7; // ~5.3m boundary
+
+    if (lateralDist > maxLateral) {
+      const excess = lateralDist - maxLateral;
+      const outward = desiredHorizontal.dot(trackRight);
+      if (outward > 0) {
+        desiredHorizontal.sub(trackRight.clone().multiplyScalar(outward));
+      }
+      const bounce = Math.min(3.5, excess * 4);
+      desiredHorizontal.sub(trackRight.clone().multiplyScalar(bounce));
+      yawRef.current -= 1.4 * delta;
+    } else if (lateralDist < -maxLateral) {
+      const excess = -maxLateral - lateralDist;
+      const outward = desiredHorizontal.dot(trackRight);
+      if (outward < 0) {
+        desiredHorizontal.sub(trackRight.clone().multiplyScalar(outward));
+      }
+      const bounce = Math.min(3.5, excess * 4);
+      desiredHorizontal.add(trackRight.clone().multiplyScalar(bounce));
+      yawRef.current += 1.4 * delta;
+    }
+
+    const currentHorizSpeed = desiredHorizontal.length();
+    if (currentHorizSpeed > topSpeed) {
+      desiredHorizontal.multiplyScalar(topSpeed / currentHorizSpeed);
+    }
+
+    bodyRef.current.setLinvel(
+      { x: desiredHorizontal.x, y: vy, z: desiredHorizontal.z },
+      true,
+    );
+
+    const speedNowKmh = Math.round(speedHoriz * 3.6);
+    setSpeedKmh(speedNowKmh);
+
+    // ---- Engine & Skid Audio Sync ----
+    const isDrifting = Math.abs(steerDir) > 0.1 && speedNowKmh > 35;
+    audio.updateEngine(speedNowKmh, input.forward, isBoosted, isRacing);
+    audio.driftScreech(isDrifting);
+
+    // ---- Star Pickups ----
     for (let i = 0; i < STAR_POSITIONS.length; i++) {
-      if (collectedStarsRef.current.has(i)) continue;
+      if (activeCollectedStars.current.has(i)) continue;
       const sp = STAR_POSITIONS[i];
       const dx = sp.x - t.x;
       const dy = sp.y + STAR_VISUAL_LIFT - t.y;
       const dz = sp.z - t.z;
       if (dx * dx + dy * dy + dz * dz < STAR_PICKUP_RADIUS ** 2) {
-        collectedStarsRef.current.add(i);
+        activeCollectedStars.current.add(i);
         collectStar();
-        onCollect?.();
+        const curStars = activeCollectedStars.current.size;
+        audio.starChime(curStars - 1);
+        onCollect?.(curStars);
       }
     }
 
-    // ---- boost strip pickup (one-shot per strip) ----
+    // ---- Boost Strip Detection ----
     for (let i = 0; i < BOOST_POSITIONS.length; i++) {
       if (consumedBoostsRef.current.has(i)) continue;
       const bp = BOOST_POSITIONS[i];
@@ -280,20 +356,14 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       const bdz = bp.z - t.z;
       if (bdx * bdx + bdz * bdz < BOOST_ACCEPT_RADIUS_SQ) {
         consumedBoostsRef.current.add(i);
-        // Apply a forward velocity kick + a satisfying upward hop.
-        bodyRef.current.setLinvel(
-          {
-            x: scratch.forward.x * BOOST_FORWARD_BONUS,
-            y: BOOST_UP_BONUS,
-            z: scratch.forward.z * BOOST_FORWARD_BONUS,
-          },
-          true,
-        );
-        audio.blip(660, 0.2, "triangle");
+        boostTimerRef.current = 1.8;
+        hopTimerRef.current = 0.3;
+        hopVyRef.current = 4.2;
+        audio.boost();
       }
     }
 
-    // ---- mushroom bouncy hop (one-shot per mushroom, short cooldown) ----
+    // ---- Mushroom Bouncy Hop ----
     for (let i = 0; i < MUSHROOM_POSITIONS.length; i++) {
       const mp = MUSHROOM_POSITIONS[i];
       const mdx = mp.x - t.x;
@@ -301,133 +371,148 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       if (mdx * mdx + mdz * mdz < MUSHROOM_RADIUS_SQ) {
         const now = performance.now();
         const last = consumedMushroomAtRef.current.get(i) ?? 0;
-        if (now - last > 1500) {
+        if (now - last > 1200) {
           consumedMushroomAtRef.current.set(i, now);
-          bodyRef.current.setLinvel(
-            {
-              x: scratch.forward.x * 5,
-              y: MUSHROOM_HOP_Y,
-              z: scratch.forward.z * 5,
-            },
-            true,
-          );
-          audio.blip(440, 0.15, "sine");
+          hopTimerRef.current = 0.65;
+          hopVyRef.current = MUSHROOM_HOP_Y;
+          audio.mushroom();
         }
       }
     }
 
-    // ---- progress & lap completion ----
-    const progress = progressAlongTrack(scratch.pos);
-    // Throttle progress updates to ~10 Hz so the HUD bar doesn't
-    // stutter fighting CSS transitions at 60 fps.
+    // ---- Lap progress & finish line ----
     progressTickRef.current += delta;
-    if (progressTickRef.current >= 0.1) {
+    if (progressTickRef.current >= 0.08) {
       progressTickRef.current = 0;
       setProgress(progress);
     }
-    if (
-      progress > PRE_FINISH_T &&
-      lastProgressRef.current <= PRE_FINISH_T
-    ) {
-      // Kart just entered the pre-finish zone → it has gone ~95% of
-      // the lap. From here, crossing back through FINISH_T wins.
+    if (progress > 0.85) {
       reachedPreFinishRef.current = true;
     }
     if (
       reachedPreFinishRef.current &&
-      progress < FINISH_T &&
-      lastProgressRef.current >= FINISH_T
+      progress < 0.12 &&
+      lastProgressRef.current > 0.85
     ) {
-      // Kart just crossed the FINISH line going forward after
-      // completing the pre-finish stretch. That's a full lap.
       reachedPreFinishRef.current = false;
       winRace();
+      audio.winFanfare();
     }
     lastProgressRef.current = progress;
 
-    // ---- auto-respawn if stalled off-road ----
-    // We use horizontal speed AND a "stuck for too long" check. The kart
-    // respawns either when it stops moving for a while, or when it leaves
-    // the road bounds entirely (e.g. somehow clipped through).
-    if (status === "racing") {
-      const speed = Math.hypot(v.x, v.z);
-      // Off-track check: if kart is way below the road, respawn immediately.
-      const isBelowTrack = t.y < 0;
-      if (speed < 0.6 || isBelowTrack) {
-        stallTimerRef.current += delta;
-        if (stallTimerRef.current > RESPAWN_STALL_SECONDS || isBelowTrack) {
-          // teleport back to last safe checkpoint (here: just respawn at start)
-          const pose = getSpawnPose();
-          bodyRef.current.setTranslation(
-            { x: pose.position[0], y: pose.position[1], z: pose.position[2] },
-            true,
-          );
-          bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
-          bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
-          stallTimerRef.current = 0;
-          // Resets the lap-progress tracker so a respawn can't trip a
-          // stale "I crossed FINISH" detection on the very next frame.
-          reachedPreFinishRef.current = false;
-          lastProgressRef.current = 0;
-          // Also reset yaw to match the spawn rotation.
-          yawRef.current = pose.rotation[1];
-          // Distinct downward blip so the player hears "you got reset"
-          // (not the star-collect sound).
-          audio.blip(180, 0.18, "sine");
-        }
-      } else {
+    // ---- Auto-respawn safety ----
+    const distFromTrack = scratch.pos.distanceTo(trackPt);
+    const isFallen = t.y < -1.0 || distFromTrack > TRACK_HALF_WIDTH + 8;
+    if (isFallen) {
+      stallTimerRef.current += delta;
+      if (stallTimerRef.current > 0.8) {
+        const trackYaw = Math.atan2(trackTan.x, trackTan.z);
+        bodyRef.current.setTranslation(
+          { x: trackPt.x, y: roadSurfaceY + 0.6, z: trackPt.z },
+          true,
+        );
+        bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
         stallTimerRef.current = 0;
+        boostTimerRef.current = 0;
+        hopTimerRef.current = 0;
+        hopVyRef.current = 0;
+        yawRef.current = trackYaw;
+        audio.blip(180, 0.2, "sine");
       }
+    } else {
+      stallTimerRef.current = 0;
     }
 
-    // ---- chase camera ----
-    // Closer + faster than before so kids can see the road ahead. We
-    // also add a tiny look-ahead bias based on steering so the camera
-    // anticipates where the kart is going.
-    const steeringLookAhead =
-      (input.left ? -2 : 0) + (input.right ? 2 : 0);
-    scratch.camTarget
-      .copy(scratch.pos)
-      .add(scratch.forward.clone().multiplyScalar(5))
-      .add(scratch.right.clone().multiplyScalar(steeringLookAhead))
-      .add(new THREE.Vector3(0, 2.0, 0));
+    // ---- Animated Spinning Wheels & Front Steering ----
+    wheelAngleRef.current += clampedForward * delta * 2.8;
+    const frontSteer = input.left ? -0.32 : input.right ? 0.32 : 0;
 
-    // Desired camera position: behind + above the kart, rotated to match.
-    scratch.camDesired
-      .copy(scratch.pos)
-      .add(scratch.forward.clone().multiplyScalar(-6.5))
-      .add(new THREE.Vector3(0, 3.8, 0));
+    if (frontLeftWheelRef.current) {
+      frontLeftWheelRef.current.rotation.y = frontSteer;
+      const mesh = frontLeftWheelRef.current.children[0] as THREE.Mesh;
+      if (mesh) mesh.rotation.x = wheelAngleRef.current;
+    }
+    if (frontRightWheelRef.current) {
+      frontRightWheelRef.current.rotation.y = frontSteer;
+      const mesh = frontRightWheelRef.current.children[0] as THREE.Mesh;
+      if (mesh) mesh.rotation.x = wheelAngleRef.current;
+    }
+    if (backLeftWheelRef.current) backLeftWheelRef.current.rotation.x = wheelAngleRef.current;
+    if (backRightWheelRef.current) backRightWheelRef.current.rotation.x = wheelAngleRef.current;
 
-    // Position lerp (frame-rate-independent exponential). A larger
-    // CAM_LERP_TIME means the camera trails more (smoother, less
-    // twitchy on bumpy terrain). 0.10s gives a tight buttery follow.
-    const CAM_LERP_TIME = 0.10;
-    const camAlpha = 1 - Math.exp(-delta / CAM_LERP_TIME);
+    // ---- Driver Head Turn ----
+    if (driverHeadRef.current) {
+      const headTarget = input.left ? -0.25 : input.right ? 0.25 : 0;
+      driverHeadRef.current.rotation.y += (headTarget - driverHeadRef.current.rotation.y) * 0.15;
+    }
+
+    // ---- Kart Body Tilt (Pitch for hills, Roll for turns) ----
+    if (kartGroup.current) {
+      const targetPitch = -Math.atan(slopeAlongFacing);
+      const targetRoll =
+        (input.right ? 0.18 : input.left ? -0.18 : 0) *
+        Math.min(1, speedHoriz / 4);
+
+      kartGroup.current.rotation.x +=
+        (targetPitch - kartGroup.current.rotation.x) * Math.min(1, delta * 8);
+      kartGroup.current.rotation.z +=
+        (targetRoll - kartGroup.current.rotation.z) * Math.min(1, delta * 8);
+    }
+
+    // ---- Multi-mode Dynamic Camera ----
+    const steeringLookAhead = (input.left ? -2.2 : 0) + (input.right ? 2.2 : 0);
+
+    if (cameraMode === "hood") {
+      // First-person cockpit bumper view
+      scratch.camTarget
+        .copy(scratch.pos)
+        .add(scratch.forward.clone().multiplyScalar(15))
+        .add(new THREE.Vector3(0, 1.1, 0));
+      scratch.camDesired
+        .copy(scratch.pos)
+        .add(scratch.forward.clone().multiplyScalar(0.6))
+        .add(new THREE.Vector3(0, 1.25, 0));
+    } else if (cameraMode === "far") {
+      // High aerial spectator chase view
+      scratch.camTarget
+        .copy(scratch.pos)
+        .add(scratch.forward.clone().multiplyScalar(4))
+        .add(new THREE.Vector3(0, 1.5, 0));
+      scratch.camDesired
+        .copy(scratch.pos)
+        .add(scratch.forward.clone().multiplyScalar(-11))
+        .add(new THREE.Vector3(0, 6.5, 0));
+    } else {
+      // Default dynamic chase view
+      scratch.camTarget
+        .copy(scratch.pos)
+        .add(scratch.forward.clone().multiplyScalar(5))
+        .add(scratch.right.clone().multiplyScalar(steeringLookAhead))
+        .add(new THREE.Vector3(0, 2.0, 0));
+      scratch.camDesired
+        .copy(scratch.pos)
+        .add(scratch.forward.clone().multiplyScalar(-6.5))
+        .add(new THREE.Vector3(0, 3.8, 0));
+    }
+
+    const camAlpha = 1 - Math.exp(-delta / 0.1);
     camera.position.lerp(scratch.camDesired, camAlpha);
+
     const currentLook = new THREE.Vector3();
     camera.getWorldDirection(currentLook);
     currentLook.multiplyScalar(10).add(camera.position);
-    const LOOK_LERP_TIME = 0.08;
-    const lookAlpha = 1 - Math.exp(-delta / LOOK_LERP_TIME);
+    const lookAlpha = 1 - Math.exp(-delta / 0.08);
     const newLook = currentLook.lerp(scratch.camTarget, lookAlpha);
     camera.lookAt(newLook);
 
-    // Speed used by camera FOV punch and body tilt below.
-    const speedNow = Math.hypot(v.x, v.z);
-
-    // ---- body tilt for visual feedback ----
-    if (kartGroup.current) {
-      const tiltTarget =
-        (input.right ? -0.18 : input.left ? 0.18 : 0) *
-        Math.min(1, speedNow / 4);
-      kartGroup.current.rotation.z +=
-        (tiltTarget - kartGroup.current.rotation.z) * Math.min(1, delta * 6);
-    }
-
-    // ---- FOV punch at high speed ----
-    const fovTarget = 60 + Math.min(12, speedNow * 0.5);
+    // Speed FOV rush
+    const fovTarget =
+      (cameraMode === "hood" ? 75 : 60) +
+      (isBoosted ? 14 : 0) +
+      Math.min(10, speedHoriz * 0.45);
     if (Math.abs(perspCamera.fov - fovTarget) > 0.1) {
-      perspCamera.fov += (fovTarget - perspCamera.fov) * Math.min(1, delta * 3);
+      perspCamera.fov += (fovTarget - perspCamera.fov) * Math.min(1, delta * 4);
       perspCamera.updateProjectionMatrix();
     }
   });
@@ -440,48 +525,74 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         mass={1.4}
         angularDamping={0}
         linearDamping={0.05}
-        restitution={0.1}
-        friction={0.8}
+        restitution={0.05}
+        friction={0.05}
         ccd
-        // Lock all three rotation axes. We drive yaw directly via
-        // setRotation each frame (using yawRef), which means the kart
-        // physically cannot roll or pitch — the "stuck on the roof"
-        // failure mode is impossible. Collisions still push the kart
-        // because translation is free.
         lockRotations
         position={getSpawnPose().position}
       >
-        {/* Cuboid collider matching the chassis box so the kart sits on
-            the road surface (not floating above it). Half-extents are
-            chassis/2 (1.0 wide, 0.55 tall, 1.35 long). Offset down by
-            -0.05 so the wheels visibly poke out below the body. */}
-        <CuboidCollider args={[1.0, 0.55, 1.35]} position={[0, -0.05, 0]} />
+        <RoundCuboidCollider
+          args={[0.85, 0.45, 1.15, 0.15]}
+          position={[0, 0.05, 0]}
+          friction={0.05}
+          restitution={0.05}
+        />
 
-        {/* Voxel kart visuals — purely decorative. We tilt the body slightly
-            while turning by reading input each frame below. */}
         <group ref={kartGroup}>
-          {/* Chassis */}
+          {/* Chassis (Red Speedster) */}
           <mesh position={[0, 0.4, 0]} castShadow receiveShadow>
             <boxGeometry args={[1.8, 0.9, 2.6]} />
-            <meshStandardMaterial color="#ff4d4d" flatShading />
+            <meshStandardMaterial color="#ff3b30" flatShading />
           </mesh>
-          {/* Cabin */}
+
+          {/* White racing stripe along hood */}
+          <mesh position={[0, 0.86, 0.4]} castShadow>
+            <boxGeometry args={[0.4, 0.02, 1.8]} />
+            <meshStandardMaterial color="#ffffff" flatShading />
+          </mesh>
+
+          {/* Cabin & Windshield */}
           <mesh position={[0, 1.1, -0.2]} castShadow>
             <boxGeometry args={[1.4, 0.7, 1.4]} />
-            <meshStandardMaterial color="#3da5ff" flatShading />
+            <meshStandardMaterial color="#007aff" flatShading />
           </mesh>
-          {/* Front grille */}
+          <mesh position={[0, 1.15, 0.52]} rotation={[-0.2, 0, 0]}>
+            <boxGeometry args={[1.2, 0.45, 0.05]} />
+            <meshStandardMaterial
+              color="#d4f1f9"
+              transparent
+              opacity={0.8}
+              roughness={0.1}
+            />
+          </mesh>
+
+          {/* Cute Pilot Driver Head */}
+          <group ref={driverHeadRef} position={[0, 1.5, -0.2]}>
+            {/* Yellow Helmet */}
+            <mesh castShadow>
+              <boxGeometry args={[0.55, 0.55, 0.55]} />
+              <meshStandardMaterial color="#ffd60a" flatShading />
+            </mesh>
+            {/* Dark Visor */}
+            <mesh position={[0, 0.05, 0.29]}>
+              <boxGeometry args={[0.45, 0.22, 0.05]} />
+              <meshStandardMaterial color="#1c1c1e" roughness={0.1} />
+            </mesh>
+          </group>
+
+          {/* Front Grille */}
           <mesh position={[0, 0.55, 1.35]} castShadow>
             <boxGeometry args={[1.4, 0.4, 0.2]} />
-            <meshStandardMaterial color="#ffd633" flatShading />
+            <meshStandardMaterial color="#ffd60a" flatShading />
           </mesh>
-          {/* Headlights */}
+
+          {/* Headlights (Glowing) */}
           <mesh position={[-0.6, 0.55, 1.45]}>
             <boxGeometry args={[0.3, 0.3, 0.1]} />
             <meshStandardMaterial
               color="#ffffff"
               emissive="#ffffff"
-              emissiveIntensity={0.6}
+              emissiveIntensity={0.8}
             />
           </mesh>
           <mesh position={[0.6, 0.55, 1.45]}>
@@ -489,23 +600,87 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
             <meshStandardMaterial
               color="#ffffff"
               emissive="#ffffff"
-              emissiveIntensity={0.6}
+              emissiveIntensity={0.8}
             />
           </mesh>
-          {/* Wheels: chunky black cubes at 4 corners. */}
-          {(
-            [
-              [-0.95, -0.2, 0.9],
-              [0.95, -0.2, 0.9],
-              [-0.95, -0.2, -0.9],
-              [0.95, -0.2, -0.9],
-            ] as [number, number, number][]
-          ).map((p, i) => (
-            <mesh key={i} position={p} castShadow>
+
+          {/* Rear Spoiler Wing */}
+          <mesh position={[0, 1.25, -1.25]} castShadow>
+            <boxGeometry args={[1.9, 0.12, 0.5]} />
+            <meshStandardMaterial color="#ff3b30" flatShading />
+          </mesh>
+          <mesh position={[-0.7, 0.95, -1.25]} castShadow>
+            <boxGeometry args={[0.1, 0.5, 0.2]} />
+            <meshStandardMaterial color="#222222" flatShading />
+          </mesh>
+          <mesh position={[0.7, 0.95, -1.25]} castShadow>
+            <boxGeometry args={[0.1, 0.5, 0.2]} />
+            <meshStandardMaterial color="#222222" flatShading />
+          </mesh>
+
+          {/* Dual Chrome Exhaust Pipes */}
+          <mesh position={[-0.55, 0.25, -1.35]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.12, 0.12, 0.35, 8]} />
+            <meshStandardMaterial color="#8e8e93" metalness={0.8} />
+          </mesh>
+          <mesh position={[0.55, 0.25, -1.35]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.12, 0.12, 0.35, 8]} />
+            <meshStandardMaterial color="#8e8e93" metalness={0.8} />
+          </mesh>
+
+          {/* Taillights */}
+          <mesh position={[-0.7, 0.65, -1.32]}>
+            <boxGeometry args={[0.3, 0.2, 0.05]} />
+            <meshStandardMaterial
+              color="#ff453a"
+              emissive="#ff453a"
+              emissiveIntensity={0.8}
+            />
+          </mesh>
+          <mesh position={[0.7, 0.65, -1.32]}>
+            <boxGeometry args={[0.3, 0.2, 0.05]} />
+            <meshStandardMaterial
+              color="#ff453a"
+              emissive="#ff453a"
+              emissiveIntensity={0.8}
+            />
+          </mesh>
+
+          {/* Animated Wheels: Front Left (Steering + Spinning) */}
+          <group ref={frontLeftWheelRef} position={[-0.95, -0.2, 0.9]}>
+            <mesh castShadow>
               <boxGeometry args={[0.55, 0.55, 0.55]} />
-              <meshStandardMaterial color="#222" flatShading />
+              <meshStandardMaterial color="#1c1c1e" flatShading />
             </mesh>
-          ))}
+          </group>
+
+          {/* Front Right */}
+          <group ref={frontRightWheelRef} position={[0.95, -0.2, 0.9]}>
+            <mesh castShadow>
+              <boxGeometry args={[0.55, 0.55, 0.55]} />
+              <meshStandardMaterial color="#1c1c1e" flatShading />
+            </mesh>
+          </group>
+
+          {/* Rear Left (Spinning) */}
+          <mesh
+            ref={backLeftWheelRef}
+            position={[-0.95, -0.2, -0.9]}
+            castShadow
+          >
+            <boxGeometry args={[0.55, 0.55, 0.55]} />
+            <meshStandardMaterial color="#1c1c1e" flatShading />
+          </mesh>
+
+          {/* Rear Right (Spinning) */}
+          <mesh
+            ref={backRightWheelRef}
+            position={[0.95, -0.2, -0.9]}
+            castShadow
+          >
+            <boxGeometry args={[0.55, 0.55, 0.55]} />
+            <meshStandardMaterial color="#1c1c1e" flatShading />
+          </mesh>
         </group>
       </RigidBody>
     </>
@@ -513,8 +688,7 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
 }
 
 // ---------------------------------------------------------------------
-// KeyboardControls — mounts global window listeners and writes into the
-// shared inputRef used by Vehicle. Keeps this side-effect-free of R3F.
+// KeyboardControls
 // ---------------------------------------------------------------------
 export function useKeyboardControls(inputRef: React.MutableRefObject<{
   forward: boolean;
@@ -525,15 +699,12 @@ export function useKeyboardControls(inputRef: React.MutableRefObject<{
   useEffect(() => {
     const map = (e: KeyboardEvent, down: boolean) => {
       const k = e.key.toLowerCase();
-      // Suppress browser default for arrow keys so they cannot scroll
-      // the page (overflow:hidden stops visible scroll, but some
-      // browsers still steal focus from the canvas when arrow keys
-      // are pressed).
       if (
         k === "arrowup" ||
         k === "arrowdown" ||
         k === "arrowleft" ||
-        k === "arrowright"
+        k === "arrowright" ||
+        k === " "
       ) {
         e.preventDefault();
       }
@@ -541,13 +712,15 @@ export function useKeyboardControls(inputRef: React.MutableRefObject<{
       if (k === "s" || k === "arrowdown") inputRef.current.reverse = down;
       if (k === "a" || k === "arrowleft") inputRef.current.left = down;
       if (k === "d" || k === "arrowright") inputRef.current.right = down;
+      if (k === " " && down) {
+        // Space acts as brake / reverse
+        inputRef.current.reverse = true;
+      } else if (k === " " && !down) {
+        inputRef.current.reverse = false;
+      }
     };
     const down = (e: KeyboardEvent) => map(e, true);
     const up = (e: KeyboardEvent) => map(e, false);
-    // Listen on both window AND document — some browsers route
-    // keydown to document first when focus is on a child element
-    // (e.g. the canvas), so a window-only listener can miss the
-    // event in some setups.
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     document.addEventListener("keydown", down);
@@ -560,55 +733,3 @@ export function useKeyboardControls(inputRef: React.MutableRefObject<{
     };
   }, [inputRef]);
 }
-
-// ---------------------------------------------------------------------
-// AudioManager — tiny WebAudio "blip" generator so collecting stars,
-// winning and respawning feel reactive. No external assets needed.
-// ---------------------------------------------------------------------
-export class AudioManager {
-  private ctx: AudioContext | null = null;
-  ensure() {
-    if (!this.ctx) {
-      try {
-        this.ctx = new (window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext)();
-      } catch {
-        this.ctx = null;
-      }
-    }
-    if (this.ctx && this.ctx.state === "suspended") {
-      this.ctx.resume().catch(() => {});
-    }
-    return this.ctx;
-  }
-  blip(freq: number, duration = 0.15, type: OscillatorType = "square") {
-    const ctx = this.ensure();
-    if (!ctx) return;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(
-      0.0001,
-      ctx.currentTime + duration,
-    );
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + duration + 0.05);
-  }
-}
-
-export const audio = new AudioManager();
-
-// ---------------------------------------------------------------------
-// Boost strip detection — uses the imported BOOST_POSITIONS array
-// (same array that the visuals are rendered from). Per-frame distance
-// check, one-shot per strip, with a small upward + forward kick.
-// ---------------------------------------------------------------------
-const BOOST_ACCEPT_RADIUS_SQ = 16; // 4 m
-const BOOST_FORWARD_BONUS = 14; // m/s added to target forward speed
-const BOOST_UP_BONUS = 6; // m/s upward kick for satisfying hop

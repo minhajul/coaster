@@ -273,10 +273,12 @@ function HillFloor() {
           0,
           z + rng() * gridStep * 0.6,
         );
-        // Reject anything too close to the track centre line.
+        // Reject anything too close to the track centre line (20m horizontal clearance).
         let nearRoad = false;
-        for (let i = 0; i < CURVE_SAMPLES.length; i += 8) {
-          if (CURVE_SAMPLES[i].distanceTo(world) < 14) {
+        for (let i = 0; i < CURVE_SAMPLES.length; i += 4) {
+          const dx = CURVE_SAMPLES[i].x - world.x;
+          const dz = CURVE_SAMPLES[i].z - world.z;
+          if (dx * dx + dz * dz < 20 * 20) {
             nearRoad = true;
             break;
           }
@@ -351,72 +353,125 @@ function HillFloor() {
 // collision comes from the side rails and the floor. We only need a
 // visual + invisible underside collider so the kart can't dive under.
 // ---------------------------------------------------------------------
-function Road() {
-  const geometry = useRoadGeometry();
-  // Per-segment flat cuboid colliders, oriented along the curve tangent.
-  // This is far more robust than a TrimeshCollider for an arcade ball —
-  // trimeshes are slow and can clip when the ball rolls at speed.
-  //
-  // IMPORTANT: the road mesh top sits at center.y + ROAD_THICKNESS and
-  // the bottom at center.y - ROAD_THICKNESS, so the collider must span
-  // the full 2*ROAD_THICKNESS and be offset upward to align with the
-  // visible ribbon top. Otherwise the ball drops through.
-  const colliders = useMemo(() => {
-    const out: {
-      position: [number, number, number];
-      size: [number, number, number];
-      yaw: number;
-    }[] = [];
-    const stride = 3; // every 3rd sample ≈ 200 slabs around the loop
-    for (let i = 0; i <= CURVE_SAMPLES.length; i += stride) {
-      const t = i / CURVE_SAMPLES.length;
+// ---------------------------------------------------------------------
+// Smooth rail collision geometry: a continuous ribbon barrier along
+// the left and right edges of the road. With Rapier trimesh collider,
+// it gives an impenetrable, smooth, gap-free barrier that never snags.
+// ---------------------------------------------------------------------
+// Smooth rail collision geometry: a continuous 3D ribbon barrier along
+// the left and right edges of the road. With Rapier trimesh collider,
+// it gives an impenetrable, thick 3D barrier that prevents tunneling.
+// ---------------------------------------------------------------------
+function useRailsGeometry() {
+  return useMemo(() => {
+    const geometry = new THREE.BufferGeometry();
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const segments = CURVE_SAMPLES.length;
+    const railHeight = 2.4;
+    const off = TRACK_HALF_WIDTH + 0.15;
+    const railThick = 0.8;
+
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
       const center = TRACK_CURVE.getPointAt(t);
       const tangent = TRACK_CURVE.getTangentAt(t).normalize();
-      const yaw = Math.atan2(tangent.x, tangent.z);
-      // Width = road diameter, length = slab length along curve, height
-      // = full mesh thickness (top to bottom of the ribbon) so the
-      // ball can't squeeze between colliders or sink below the road.
-      out.push({
-        position: [center.x, center.y, center.z],
-        size: [TRACK_HALF_WIDTH * 2, ROAD_THICKNESS * 2, 1.2],
-        yaw,
-      });
+      const right = new THREE.Vector3()
+        .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
+        .normalize();
+
+      const botY = center.y + ROAD_THICKNESS - 0.4;
+      const topY = center.y + ROAD_THICKNESS + railHeight;
+
+      // Left rail: inner bottom (0), inner top (1), outer top (2), outer bottom (3)
+      const lInnerX = center.x + right.x * off;
+      const lInnerZ = center.z + right.z * off;
+      const lOuterX = center.x + right.x * (off + railThick);
+      const lOuterZ = center.z + right.z * (off + railThick);
+
+      positions.push(
+        lInnerX, botY, lInnerZ,
+        lInnerX, topY, lInnerZ,
+        lOuterX, topY, lOuterZ,
+        lOuterX, botY, lOuterZ,
+      );
+
+      // Right rail: inner bottom (4), inner top (5), outer top (6), outer bottom (7)
+      const rInnerX = center.x - right.x * off;
+      const rInnerZ = center.z - right.z * off;
+      const rOuterX = center.x - right.x * (off + railThick);
+      const rOuterZ = center.z - right.z * (off + railThick);
+
+      positions.push(
+        rInnerX, botY, rInnerZ,
+        rInnerX, topY, rInnerZ,
+        rOuterX, topY, rOuterZ,
+        rOuterX, botY, rOuterZ,
+      );
     }
-    return out;
+
+    const ringSize = 8;
+    for (let i = 0; i < segments; i++) {
+      const curr = i * ringSize;
+      const next = (i + 1) * ringSize;
+
+      // Left rail quads (inner face facing road, top face, outer face)
+      indices.push(curr + 0, next + 0, next + 1);
+      indices.push(curr + 0, next + 1, curr + 1);
+      indices.push(curr + 0, next + 1, next + 0);
+      indices.push(curr + 0, curr + 1, next + 1);
+
+      indices.push(curr + 1, next + 1, next + 2);
+      indices.push(curr + 1, next + 2, curr + 2);
+
+      indices.push(curr + 2, next + 2, next + 3);
+      indices.push(curr + 2, next + 3, curr + 3);
+
+      // Right rail quads (inner face facing road, top face, outer face)
+      indices.push(curr + 4, next + 5, next + 4);
+      indices.push(curr + 4, curr + 5, next + 5);
+      indices.push(curr + 4, next + 4, next + 5);
+      indices.push(curr + 4, next + 5, curr + 5);
+
+      indices.push(curr + 5, next + 6, next + 5);
+      indices.push(curr + 5, curr + 6, next + 6);
+
+      indices.push(curr + 6, next + 7, next + 6);
+      indices.push(curr + 6, curr + 7, next + 7);
+    }
+
+    geometry.setIndex(indices);
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(positions, 3),
+    );
+    geometry.computeVertexNormals();
+    return geometry;
   }, []);
+}
+
+// ---------------------------------------------------------------------
+// Road mesh with continuous trimesh collision. Perfectly matches the
+// 3D curved surface with zero cracks, zero lips, and smooth riding.
+// ---------------------------------------------------------------------
+function Road() {
+  const geometry = useRoadGeometry();
   return (
-    <>
+    <RigidBody type="fixed" colliders="trimesh" friction={0.05} restitution={0.02}>
       <mesh geometry={geometry} receiveShadow>
         <meshStandardMaterial vertexColors flatShading />
       </mesh>
-      {/* One CuboidCollider per road segment. Bulletproof for arcade play. */}
-      <group>
-        {colliders.map((c, i) => (
-          <RigidBody
-            key={`road-col-${i}`}
-            type="fixed"
-            colliders={false}
-            position={c.position}
-            rotation={[0, c.yaw, 0]}
-          >
-            <CuboidCollider
-              args={[c.size[0] / 2, c.size[1] / 2, c.size[2] / 2]}
-              friction={1.0}
-              restitution={0.02}
-            />
-          </RigidBody>
-        ))}
-      </group>
-    </>
+    </RigidBody>
   );
 }
 
 // ---------------------------------------------------------------------
-// Soft side rails: chunky bouncy cubes lining the road. They use Rapier
-// restitution so bumping them launches the kart rather than blocking it.
+// Soft side rails: chunky bouncy cubes lining the road, backed by a
+// continuous smooth trimesh barrier for bulletproof containment.
 // ---------------------------------------------------------------------
 function SideRails() {
-  // Pre-bake the rails as an InstancedRigidBodies for performance.
+  const railsGeometry = useRailsGeometry();
+
   const { rails } = useMemo(() => {
     const positions: { pos: THREE.Vector3; right: THREE.Vector3 }[] = [];
     const step = 3; // every Nth sample
@@ -458,6 +513,11 @@ function SideRails() {
 
   return (
     <>
+      {/* Continuous smooth guard-rail physics barrier */}
+      <RigidBody type="fixed" colliders="trimesh" friction={0.05} restitution={0.4}>
+        <mesh geometry={railsGeometry} visible={false} />
+      </RigidBody>
+
       {/* Left rail: white sugar cubes */}
       <instancedMesh
         ref={railLeftRef}
@@ -478,31 +538,6 @@ function SideRails() {
         <boxGeometry args={[RAIL_THICKNESS, RAIL_HEIGHT, 1.4]} />
         <meshStandardMaterial color="#f8f8f8" flatShading />
       </instancedMesh>
-
-      {/* Inflate cuboid colliders around the rails so the kart bounces. */}
-      {rails.map(({ pos, right }, i) => {
-        const off = TRACK_HALF_WIDTH + 0.4;
-        const lx = pos.x + right.x * off;
-        const lz = pos.z + right.z * off;
-        const rx = pos.x - right.x * off;
-        const rz = pos.z - right.z * off;
-        return (
-          <RigidBody key={`rail-col-${i}`} type="fixed" colliders={false}>
-            <CuboidCollider
-              args={[RAIL_THICKNESS / 2 + 0.05, RAIL_HEIGHT / 2, 0.7]}
-              position={[lx, pos.y + RAIL_HEIGHT / 2, lz]}
-              restitution={0.9}
-              friction={0.2}
-            />
-            <CuboidCollider
-              args={[RAIL_THICKNESS / 2 + 0.05, RAIL_HEIGHT / 2, 0.7]}
-              position={[rx, pos.y + RAIL_HEIGHT / 2, rz]}
-              restitution={0.9}
-              friction={0.2}
-            />
-          </RigidBody>
-        );
-      })}
     </>
   );
 }

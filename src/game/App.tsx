@@ -1,22 +1,29 @@
 import { useEffect, useRef } from "react";
+import * as THREE from "three";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Physics } from "@react-three/rapier";
 import { ACESFilmicToneMapping, SRGBColorSpace } from "three";
 import { Track } from "./Track";
-import { Vehicle, audio, useKeyboardControls } from "./Vehicle";
+import { Vehicle, useKeyboardControls } from "./Vehicle";
+import { Particles } from "./Particles";
+import { Environment } from "./Environment";
 import { HUD, useNoScrollOnCanvas } from "./HUD";
 import { useGameStore } from "./useGameStore";
+import { audio } from "./audio";
 
 // =====================================================================
-// App.tsx — top-level wiring: Canvas + physics provider + lighting +
-// a tiny TimerDriver that ticks the Zustand clock each frame.
+// App.tsx — Top-level scene composition:
+//   • Canvas with post-processing & tone mapping
+//   • Lighting & procedural sky
+//   • Rapier physics world with Track & Vehicle
+//   • 3D Particles (exhaust, nitro flames, speed streaks)
+//   • Environment (clouds, windmills, hot air balloons)
+//   • DOM HUD with Speedometer, Radar Mini-map, Modals
 // =====================================================================
 
 export function App() {
   useNoScrollOnCanvas();
 
-  // Shared mutable input state — keyboard writes here, HUD buttons write
-  // here, and Vehicle reads here. Refs avoid re-renders on key changes.
   const inputRef = useRef({
     forward: false,
     left: false,
@@ -25,12 +32,18 @@ export function App() {
   });
   useKeyboardControls(inputRef);
 
+  // Shared kart transform refs for particles, mini-map, and camera
+  const kartPosRef = useRef(new THREE.Vector3(60, 6.7, 0));
+  const kartQuatRef = useRef(new THREE.Quaternion());
+  const kartYawRef = useRef(0);
+  const collectedStarsRef = useRef<Set<number>>(new Set());
+
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-sky-300">
       <Canvas
         shadows
         dpr={[1, 2]}
-        camera={{ position: [0, 20, 60], fov: 60, near: 0.1, far: 600 }}
+        camera={{ position: [0, 20, 60], fov: 60, near: 0.1, far: 800 }}
         gl={{
           antialias: true,
           toneMapping: ACESFilmicToneMapping,
@@ -38,49 +51,53 @@ export function App() {
           outputColorSpace: SRGBColorSpace,
         }}
       >
-        {/* Sky-blue background + soft fog for distance falloff */}
         <color attach="background" args={["#aee2ff"]} />
-        <fog attach="fog" args={["#bde7ff", 110, 380]} />
+        <fog attach="fog" args={["#bde7ff", 130, 420]} />
 
-        {/* Friendly lighting: bright key + soft fill so voxel faces read
-            clearly without harsh contrast (kid-friendly vibe). */}
+        {/* Dynamic bright sunlight */}
         <ambientLight intensity={0.7} color="#fff8e7" />
         <directionalLight
-          position={[40, 80, 30]}
+          position={[50, 90, 40]}
           intensity={1.4}
           color="#fff5d6"
           castShadow
           shadow-mapSize={[1024, 1024]}
-          shadow-camera-left={-80}
-          shadow-camera-right={80}
-          shadow-camera-top={80}
-          shadow-camera-bottom={-80}
+          shadow-camera-left={-100}
+          shadow-camera-right={100}
+          shadow-camera-top={100}
+          shadow-camera-bottom={-100}
           shadow-camera-near={1}
-          shadow-camera-far={200}
+          shadow-camera-far={250}
         />
-        <hemisphereLight
-          args={["#bde7ff", "#6c4a2a", 0.4]}
-        />
+        <hemisphereLight args={["#bde7ff", "#6c4a2a", 0.4]} />
 
         <Physics gravity={[0, -14, 0]} colliders={false} timeStep={1 / 60}>
           <Track />
+          <Environment />
           <Vehicle
             inputRef={inputRef}
-            onCollect={() => audio.blip(880, 0.08, "square")}
+            kartPosRef={kartPosRef}
+            kartQuatRef={kartQuatRef}
+            kartYawRef={kartYawRef}
+            collectedStarsRef={collectedStarsRef}
           />
+          <Particles kartPosRef={kartPosRef} kartQuatRef={kartQuatRef} />
           <TimerDriver />
         </Physics>
       </Canvas>
 
-      <HUD inputRef={inputRef} />
+      <HUD
+        inputRef={inputRef}
+        kartPosRef={kartPosRef}
+        kartYawRef={kartYawRef}
+        collectedStarsRef={collectedStarsRef}
+      />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------
-// TimerDriver — runs inside the Canvas so it can use useFrame. Each
-// frame, ticks the race timer or the start countdown as appropriate.
-// We also play audio cues on state transitions.
+// TimerDriver — ticks countdown & race clock + plays audio transitions
 // ---------------------------------------------------------------------
 function TimerDriver() {
   const status = useGameStore((s) => s.status);
@@ -90,8 +107,8 @@ function TimerDriver() {
 
   useEffect(() => {
     if (status !== prevStatus.current) {
-      if (status === "won") audio.blip(523, 0.4, "triangle");
-      if (status === "lost") audio.blip(220, 0.5, "sawtooth");
+      if (status === "won") audio.winFanfare();
+      if (status === "lost") audio.loseSound();
       prevStatus.current = status;
     }
   }, [status]);
