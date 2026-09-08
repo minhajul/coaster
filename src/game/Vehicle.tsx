@@ -30,7 +30,7 @@ const MUSHROOM_IMPULSE_Y = 9;
 const MUSHROOM_IMPULSE_FWD = 5;
 const STAR_PICKUP_RADIUS = 1.8;
 const STAR_VISUAL_LIFT = 1.0; // stars float above the road
-const RESPAWN_STALL_SECONDS = 4;
+const RESPAWN_STALL_SECONDS = 2.5;
 const LAP_PROGRESS_THRESHOLD = 0.85; // when kart has gone ~85% of loop
 
 // Pre-baked lists for cheap distance checks (regenerated once).
@@ -138,32 +138,39 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
 
     // ---- throttle & brake ----
     // Arcade-style direct velocity control. We compute the kart's current
-    // forward speed, accelerate/decelerate it directly, then re-blend the
-    // final horizontal velocity. Much snappier and more reliable than
-    // impulse-based driving for a kids' game.
+    // forward speed (in XZ plane only — vertical is left to physics),
+    // accelerate/decelerate it, then re-apply ONLY along the forward axis.
+    // We never zero out the perpendicular component or fully reset the
+    // velocity, so downhill momentum and lateral micro-bumps are preserved
+    // and the kart can never get "wedged" into a stuck state.
     if (isRacing) {
-      const vel = new THREE.Vector3(v.x, v.y, v.z);
-      const forwardSpeed = scratch.forward.dot(vel);
+      // Project velocity onto forward, but only the horizontal component
+      // so going up/down hills doesn't bleed the speed reading.
+      const horizVel = new THREE.Vector3(v.x, 0, v.z);
+      const forwardSpeed = scratch.forward.dot(horizVel);
 
       // Target forward speed
       let targetForward = forwardSpeed;
       if (input.forward) targetForward += ACCEL * delta;
       if (input.reverse) targetForward -= REVERSE * delta;
 
-      // Coast to a stop when no input
+      // Mild coast when no input (gentle — never stalls the kart)
       if (!input.forward && !input.reverse) {
-        const drag = 6 * delta;
-        if (Math.abs(forwardSpeed) < drag) targetForward = 0;
+        const drag = 2.5 * delta;
+        if (Math.abs(forwardSpeed) <= drag) targetForward = 0;
         else targetForward = forwardSpeed - Math.sign(forwardSpeed) * drag;
       }
 
-      targetForward = Math.max(-MAX_SPEED * 0.6, Math.min(MAX_SPEED, targetForward));
+      targetForward = Math.max(
+        -MAX_SPEED * 0.6,
+        Math.min(MAX_SPEED, targetForward),
+      );
 
       // ---- steering ----
       // Scale turning by speed so a stationary kart doesn't spin in place
       // but is still very responsive in motion — perfect arcade feel.
       const speed = Math.hypot(v.x, v.z);
-      const speedFactor = Math.min(1, Math.max(0.3, speed / 3));
+      const speedFactor = Math.min(1, Math.max(0.4, speed / 3));
       const yawDelta =
         (input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0);
       const yawAmount = yawDelta * speedFactor * delta;
@@ -197,14 +204,19 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
 
       // ---- compose final horizontal velocity ----
-      // Keep lateral velocity low (arcade grip) and apply new forward speed.
-      const lateralComponent = scratch.right
+      // We blend the existing horizontal velocity toward the desired
+      // forward velocity along the kart's facing axis. Some lateral is
+      // preserved (grip), but most is bled off so the kart can't
+      // permanently slide sideways into a stuck state.
+      const newForwardVel = scratch.forward
         .clone()
-        .multiplyScalar(scratch.right.dot(vel));
-      const desiredHorizontal = scratch.forward
+        .multiplyScalar(targetForward);
+      // Preserve a small fraction of lateral velocity (kid-friendly drift
+      // feel) but never all of it — that would cause permanent slides.
+      const lateralVel = scratch.right
         .clone()
-        .multiplyScalar(targetForward)
-        .add(lateralComponent.multiplyScalar(0.2)); // damp lateral
+        .multiplyScalar(scratch.right.dot(horizVel) * 0.05);
+      const desiredHorizontal = newForwardVel.add(lateralVel);
       bodyRef.current.setLinvel(
         { x: desiredHorizontal.x, y: v.y, z: desiredHorizontal.z },
         true,
@@ -240,11 +252,16 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
     lastProgressRef.current = progress;
 
     // ---- auto-respawn if stalled off-road ----
+    // We use horizontal speed AND a "stuck for too long" check. The kart
+    // respawns either when it stops moving for a while, or when it leaves
+    // the road bounds entirely (e.g. somehow clipped through).
     if (status === "racing") {
       const speed = Math.hypot(v.x, v.z);
-      if (speed < 0.4) {
+      // Off-track check: if kart is way below the road, respawn immediately.
+      const isBelowTrack = t.y < 0;
+      if (speed < 0.6 || isBelowTrack) {
         stallTimerRef.current += delta;
-        if (stallTimerRef.current > RESPAWN_STALL_SECONDS) {
+        if (stallTimerRef.current > RESPAWN_STALL_SECONDS || isBelowTrack) {
           // teleport back to last safe checkpoint (here: just respawn at start)
           const pose = getSpawnPose();
           bodyRef.current.setTranslation(

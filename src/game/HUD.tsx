@@ -27,20 +27,34 @@ export function HUD({ inputRef }: HUDProps) {
   const resetRace = useGameStore((s) => s.resetRace);
 
   // ---- touch button helpers (press = true, release = false) ----
+  // We use pointer capture so the button stays "pressed" even if the
+  // finger slides off the visible button, and we only release on
+  // pointerup / pointercancel — not on pointerleave, which fires
+  // spuriously on touch devices when the finger moves a few pixels.
   const bindBtn = (key: keyof typeof inputRef.current) => ({
-    onPointerDown: (e: React.PointerEvent) => {
+    onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
       e.preventDefault();
+      e.stopPropagation();
       inputRef.current[key] = true;
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
     },
-    onPointerUp: (e: React.PointerEvent) => {
+    onPointerUp: (e: React.PointerEvent<HTMLButtonElement>) => {
       e.preventDefault();
       inputRef.current[key] = false;
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
     },
-    onPointerLeave: (e: React.PointerEvent) => {
-      e.preventDefault();
+    onPointerCancel: (e: React.PointerEvent<HTMLButtonElement>) => {
       inputRef.current[key] = false;
     },
-    onPointerCancel: () => {
+    onLostPointerCapture: () => {
       inputRef.current[key] = false;
     },
   });
