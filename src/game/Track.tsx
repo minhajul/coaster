@@ -3,8 +3,8 @@ import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import {
   CuboidCollider,
-  InstancedRigidBodies,
   RigidBody,
+  TrimeshCollider,
 } from "@react-three/rapier";
 import { useGameStore } from "./useGameStore";
 import {
@@ -307,11 +307,30 @@ function Road() {
       <mesh geometry={geometry} receiveShadow>
         <meshStandardMaterial vertexColors flatShading />
       </mesh>
-      {/* Invisible underside collider so the kart can't fall through. */}
-      <mesh geometry={geometry} visible={false}>
-        <meshBasicMaterial />
-      </mesh>
+      {/* Rapier trimesh collider built from the same road geometry, so
+          the kart rolls on the actual ribbon (not the floor 3 m below). */}
+      <RigidBody type="fixed" colliders={false} friction={0.9}>
+        <RoadTrimeshCollider geometry={geometry} />
+      </RigidBody>
     </>
+  );
+}
+
+// Dedicated collider component so we can call useMemo on the geometry
+// without re-running the heavy buffer setup on every parent render.
+function RoadTrimeshCollider({ geometry }: { geometry: THREE.BufferGeometry }) {
+  const { vertices, indices } = useMemo(() => {
+    const pos = geometry.getAttribute("position").array as Float32Array;
+    const idx = geometry.getIndex()?.array as Uint32Array | undefined;
+    return { vertices: pos, indices: idx ?? null };
+  }, [geometry]);
+  if (!indices) return null;
+  return (
+    <TrimeshCollider
+      args={[vertices, indices]}
+      friction={0.9}
+      restitution={0.05}
+    />
   );
 }
 

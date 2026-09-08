@@ -5,7 +5,6 @@ import {
   BallCollider,
   RapierRigidBody,
   RigidBody,
-  useRapier,
 } from "@react-three/rapier";
 import { useGameStore } from "./useGameStore";
 import { getSpawnPose, progressAlongTrack, TRACK_CURVE } from "./trackCurve";
@@ -22,11 +21,11 @@ import { getStars } from "./Track";
 // =====================================================================
 
 // ---- tuning constants ----
-const ACCEL = 32; // forward force per second
-const REVERSE = 14; // brake/reverse
+const ACCEL = 22; // m/s² forward acceleration (kid-friendly snappy)
+const REVERSE = 14; // m/s² reverse / brake
 const MAX_SPEED = 22; // m/s top forward speed
-const TURN_RATE = 2.6; // radians / s
-const BOOST_IMPULSE = 14; // instant forward kick
+const TURN_RATE = 2.4; // radians / s
+const BOOST_IMPULSE = 12; // instant forward velocity kick
 const MUSHROOM_IMPULSE_Y = 9;
 const MUSHROOM_IMPULSE_FWD = 5;
 const STAR_PICKUP_RADIUS = 1.8;
@@ -53,7 +52,6 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
   const bodyRef = useRef<RapierRigidBody>(null!);
   const kartGroup = useRef<THREE.Group>(null!);
   const { camera } = useThree();
-  const rapier = useRapier();
 
   // Tracks which stars have been collected in this race so we don't
   // award double-points when the kart lingers near a star.
@@ -139,60 +137,64 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
     const isRacing = status === "racing";
 
     // ---- throttle & brake ----
+    // Arcade-style direct velocity control. We compute the kart's current
+    // forward speed, accelerate/decelerate it directly, then re-blend the
+    // final horizontal velocity. Much snappier and more reliable than
+    // impulse-based driving for a kids' game.
     if (isRacing) {
-      const forwardSpeed = scratch.forward.dot(
-        new THREE.Vector3(v.x, v.y, v.z),
-      );
-      let desiredForce = 0;
-      if (input.forward) desiredForce += ACCEL;
-      if (input.reverse) desiredForce -= REVERSE;
+      const vel = new THREE.Vector3(v.x, v.y, v.z);
+      const forwardSpeed = scratch.forward.dot(vel);
 
-      // Apply force along forward direction.
-      if (desiredForce !== 0) {
-        bodyRef.current.applyImpulse(
-          {
-            x: scratch.forward.x * desiredForce * delta,
-            y: 0,
-            z: scratch.forward.z * desiredForce * delta,
-          },
-          true,
-        );
+      // Target forward speed
+      let targetForward = forwardSpeed;
+      if (input.forward) targetForward += ACCEL * delta;
+      if (input.reverse) targetForward -= REVERSE * delta;
+
+      // Coast to a stop when no input
+      if (!input.forward && !input.reverse) {
+        const drag = 6 * delta;
+        if (Math.abs(forwardSpeed) < drag) targetForward = 0;
+        else targetForward = forwardSpeed - Math.sign(forwardSpeed) * drag;
       }
 
-      // Cap top speed so young players don't fly off.
-      const speed = Math.hypot(v.x, v.z);
-      if (speed > MAX_SPEED) {
-        const scale = MAX_SPEED / speed;
-        bodyRef.current.setLinvel(
-          { x: v.x * scale, y: v.y, z: v.z * scale },
-          true,
-        );
-      }
+      targetForward = Math.max(-MAX_SPEED * 0.6, Math.min(MAX_SPEED, targetForward));
 
       // ---- steering ----
       // Scale turning by speed so a stationary kart doesn't spin in place
       // but is still very responsive in motion — perfect arcade feel.
-      const speedFactor = Math.min(1, speed / 4);
-      if (input.left) {
-        bodyRef.current.applyTorqueImpulse(
-          {
-            x: 0,
-            y: TURN_RATE * speedFactor * delta * 4,
-            z: 0,
-          },
+      const speed = Math.hypot(v.x, v.z);
+      const speedFactor = Math.min(1, speed / 3);
+      const yawDelta =
+        (input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0);
+      const yawAmount = yawDelta * speedFactor * delta;
+      if (yawAmount !== 0) {
+        const yq = new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(0, 1, 0),
+          yawAmount,
+        );
+        scratch.quat.premultiply(yq);
+        bodyRef.current.setRotation(
+          { x: scratch.quat.x, y: scratch.quat.y, z: scratch.quat.z, w: scratch.quat.w },
           true,
         );
+        // recompute forward/right after rotation
+        scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
+        scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
       }
-      if (input.right) {
-        bodyRef.current.applyTorqueImpulse(
-          {
-            x: 0,
-            y: -TURN_RATE * speedFactor * delta * 4,
-            z: 0,
-          },
-          true,
-        );
-      }
+
+      // ---- compose final horizontal velocity ----
+      // Keep lateral velocity low (arcade grip) and apply new forward speed.
+      const lateralComponent = scratch.right
+        .clone()
+        .multiplyScalar(scratch.right.dot(vel));
+      const desiredHorizontal = scratch.forward
+        .clone()
+        .multiplyScalar(targetForward)
+        .add(lateralComponent.multiplyScalar(0.25)); // damp lateral, not zero
+      bodyRef.current.setLinvel(
+        { x: desiredHorizontal.x, y: v.y, z: desiredHorizontal.z },
+        true,
+      );
 
       // Gentle upright torque — keeps the kart from flipping forever.
       // We compare kart's local up with world up and add a correction.
@@ -200,19 +202,6 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       const tilt = new THREE.Vector3().crossVectors(localUp, scratch.up);
       bodyRef.current.applyTorqueImpulse(
         { x: tilt.x * 8 * delta, y: 0, z: tilt.z * 8 * delta },
-        true,
-      );
-
-      // Keep the kart from drifting off sideways too aggressively (lateral friction).
-      const lateralVel = scratch.right
-        .clone()
-        .multiplyScalar(scratch.right.dot(new THREE.Vector3(v.x, 0, v.z)));
-      bodyRef.current.applyImpulse(
-        {
-          x: -lateralVel.x * 1.4 * delta,
-          y: 0,
-          z: -lateralVel.z * 1.4 * delta,
-        },
         true,
       );
     }
@@ -291,10 +280,10 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         ref={bodyRef}
         colliders={false}
         mass={1.4}
-        angularDamping={1.2}
-        linearDamping={0.4}
+        angularDamping={0.6}
+        linearDamping={0.05}
         restitution={0.1}
-        friction={0.6}
+        friction={0.8}
         ccd
         position={getSpawnPose().position}
       >
