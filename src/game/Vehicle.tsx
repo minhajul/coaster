@@ -69,6 +69,10 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
   // Whether the kart has reached the pre-finish zone this lap. Set
   // once progress > PRE_FINISH_T, cleared on lap win / new race.
   const reachedPreFinishRef = useRef(false);
+  // Yaw angle (radians) of the kart, integrated each frame from
+  // steering input. Since rotations are locked via lockRotations,
+  // Rapier does not rotate the body for us — we manage yaw directly.
+  const yawRef = useRef(0);
   // Throttle HUD progress updates to ~10 Hz so the bar doesn't stutter.
   const progressTickRef = useRef(0);
 
@@ -117,6 +121,8 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         );
         bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
         bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        // Reset our tracked yaw to match the spawn rotation.
+        yawRef.current = pose.rotation[1];
       }
     }
   }, [status]);
@@ -191,39 +197,30 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         Math.min(MAX_SPEED, targetForward),
       );
 
-      // ---- steering via angular velocity ----
-      // We apply yaw torque via setAngvel.y (NOT setRotation) so that
-      // Rapier physics can still process collisions and bounce the kart
-      // naturally. We only damp out unintended roll/pitch.
+      // ---- steering: directly control yaw via setRotation ----
+      // Earlier we tried setAngvel-based steering + torque-impulse
+      // upright correction, but the impulse was wiped the next frame
+      // and the kart could roll onto its roof. Now we lock rotations
+      // (lockRotations on RigidBody) and drive yaw directly with
+      // setRotation. This gives bulletproof arcade handling:
+      // • kart can never flip over
+      // • steering always works (no setAngvel integration lag)
+      // • collisions still work because translation is free
       const speed = Math.hypot(v.x, v.z);
       const speedFactor = Math.min(1, Math.max(0.4, speed / 3));
-      const yawAngularVel =
+      // Read current yaw from the (locked) rotation, add input, write back.
+      // Rapier integration of yaw doesn't apply because rotations are
+      // locked, so setAngvel would do nothing for yaw — we just integrate
+      // the angle ourselves here.
+      yawRef.current +=
         ((input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0)) *
-        speedFactor;
-      // Apply yaw velocity; zero out roll/pitch so the kart stays
-      // upright without clobbering Rapier's collision response.
-      bodyRef.current.setAngvel(
-        { x: 0, y: yawAngularVel, z: 0 },
-        true,
-      );
-      // Read back the resulting yaw so velocity composition uses the
-      // kart's CURRENT facing direction (post-Rapier step).
-      const updatedR = bodyRef.current.rotation();
-      scratch.quat.set(updatedR.x, updatedR.y, updatedR.z, updatedR.w);
+        speedFactor *
+        delta;
+      const yaw = yawRef.current;
+      scratch.quat.setFromAxisAngle(scratch.up, yaw);
+      bodyRef.current.setRotation(scratch.quat, true);
       scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
       scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
-
-      // Light upright correction — only kicks in if the kart is
-      // significantly tilted (e.g. landed upside-down). We use a small
-      // torque, not a hard setRotation, so collisions still work.
-      const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(scratch.quat);
-      const tilt = new THREE.Vector3().crossVectors(localUp, scratch.up);
-      if (tilt.lengthSq() > 0.01) {
-        bodyRef.current.applyTorqueImpulse(
-          { x: tilt.x * 4 * delta, y: 0, z: tilt.z * 4 * delta },
-          true,
-        );
-      }
 
       // ---- compose final horizontal velocity ----
       // We blend the existing horizontal velocity toward the desired
@@ -243,12 +240,6 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         { x: desiredHorizontal.x, y: v.y, z: desiredHorizontal.z },
         true,
       );
-
-      // We deliberately do NOT zero out angvel here — Rapier integrates
-      // angular velocity across substeps, so setting yaw once per frame
-      // (line 195) is enough. Zeroing it would clobber the turn we just
-      // applied. Roll/pitch are already corrected by the upright torque
-      // impulse above.
     }
 
     // ---- star pickup (distance based, cheap) ----
@@ -362,6 +353,8 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
           // stale "I crossed FINISH" detection on the very next frame.
           reachedPreFinishRef.current = false;
           lastProgressRef.current = 0;
+          // Also reset yaw to match the spawn rotation.
+          yawRef.current = pose.rotation[1];
           // Distinct downward blip so the player hears "you got reset"
           // (not the star-collect sound).
           audio.blip(180, 0.18, "sine");
@@ -428,6 +421,12 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         restitution={0.1}
         friction={0.8}
         ccd
+        // Lock all three rotation axes. We drive yaw directly via
+        // setRotation each frame (using yawRef), which means the kart
+        // physically cannot roll or pitch — the "stuck on the roof"
+        // failure mode is impossible. Collisions still push the kart
+        // because translation is free.
+        lockRotations
         position={getSpawnPose().position}
       >
         {/* Cuboid collider matching the chassis box so the kart sits on
