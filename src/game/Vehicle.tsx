@@ -2,13 +2,17 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import {
-  BallCollider,
+  CuboidCollider,
   RapierRigidBody,
   RigidBody,
 } from "@react-three/rapier";
 import { useGameStore } from "./useGameStore";
 import { getSpawnPose, progressAlongTrack, TRACK_CURVE } from "./trackCurve";
-import { getStars, MUSHROOM_POSITIONS } from "./Track";
+import {
+  BOOST_POSITIONS,
+  MUSHROOM_POSITIONS,
+  STAR_POSITIONS,
+} from "./Track";
 
 // =====================================================================
 // Vehicle.tsx
@@ -31,9 +35,6 @@ const STAR_PICKUP_RADIUS = 2.4;
 const STAR_VISUAL_LIFT = 1.0; // stars float above the road
 const RESPAWN_STALL_SECONDS = 2.5;
 const LAP_PROGRESS_THRESHOLD = 0.85; // when kart has gone ~85% of loop
-
-// Pre-baked lists for cheap distance checks (regenerated once).
-const STAR_DATA = getStars();
 
 interface VehicleProps {
   /** External input state (from HUD touch buttons + keyboard). */
@@ -58,16 +59,17 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
   const collectedStarsRef = useRef<Set<number>>(new Set());
   const stallTimerRef = useRef(0);
   const lastProgressRef = useRef(0);
-  const progressWrappedRef = useRef(false);
   const consumedBoostsRef = useRef<Set<number>>(new Set());
   const consumedMushroomAtRef = useRef<Map<number, number>>(new Map());
+  // Throttle HUD progress updates to ~10 Hz so the bar doesn't stutter.
+  const progressTickRef = useRef(0);
 
   const startRace = useGameStore((s) => s.startRace);
-  const resetRace = useGameStore((s) => s.resetRace);
   const collectStar = useGameStore((s) => s.collectStar);
   const winRace = useGameStore((s) => s.winRace);
   const setProgress = useGameStore((s) => s.setProgress);
   const status = useGameStore((s) => s.status);
+  const paused = useGameStore((s) => s.paused);
 
   // ---- one-time respawn at start ----
   useEffect(() => {
@@ -91,7 +93,7 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       consumedBoostsRef.current = new Set();
       consumedMushroomAtRef.current = new Map();
       stallTimerRef.current = 0;
-      progressWrappedRef.current = false;
+      lastProgressRef.current = 0;
       const pose = getSpawnPose();
       if (bodyRef.current) {
         bodyRef.current.setTranslation(
@@ -127,6 +129,13 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
 
   useFrame((_, deltaRaw) => {
     if (!bodyRef.current) return;
+    // Freeze scene updates when not actively racing — modals (start, win,
+    // lose) and pause should keep the kart still so they feel stable.
+    if (status !== "racing" || paused) {
+      bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      return;
+    }
     const delta = Math.min(deltaRaw, 1 / 30); // clamp to keep physics stable on lag
     const t = bodyRef.current.translation();
     const r = bodyRef.current.rotation();
@@ -172,42 +181,39 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         Math.min(MAX_SPEED, targetForward),
       );
 
-      // ---- steering ----
-      // Scale turning by speed so a stationary kart doesn't spin in place
-      // but is still very responsive in motion — perfect arcade feel.
+      // ---- steering via angular velocity ----
+      // We apply yaw torque via setAngvel.y (NOT setRotation) so that
+      // Rapier physics can still process collisions and bounce the kart
+      // naturally. We only damp out unintended roll/pitch.
       const speed = Math.hypot(v.x, v.z);
       const speedFactor = Math.min(1, Math.max(0.4, speed / 3));
-      const yawDelta =
-        (input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0);
-      const yawAmount = yawDelta * speedFactor * delta;
-      // Build a yaw-only quaternion and slerp the body toward it. This
-      // both rotates the kart AND keeps it perfectly upright every frame
-      // — no torque impulse needed, no spinning out.
-      if (yawAmount !== 0) {
-        const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-          new THREE.Vector3(0, 1, 0),
-          yawAmount,
-        );
-        scratch.quat.premultiply(yawQuat).normalize();
-      }
-      // Always re-orthonormalise to upright (zero roll/pitch), so bumps
-      // and bounces never leave the kart flipped over.
-      const e = new THREE.Euler().setFromQuaternion(scratch.quat, "YXZ");
-      e.x = 0;
-      e.z = 0;
-      scratch.quat.setFromEuler(e);
-      bodyRef.current.setRotation(
-        {
-          x: scratch.quat.x,
-          y: scratch.quat.y,
-          z: scratch.quat.z,
-          w: scratch.quat.w,
-        },
+      const yawAngularVel =
+        ((input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0)) *
+        speedFactor;
+      // Apply yaw velocity; zero out roll/pitch so the kart stays
+      // upright without clobbering Rapier's collision response.
+      bodyRef.current.setAngvel(
+        { x: 0, y: yawAngularVel, z: 0 },
         true,
       );
-      // recompute forward/right after rotation
+      // Read back the resulting yaw so velocity composition uses the
+      // kart's CURRENT facing direction (post-Rapier step).
+      const updatedR = bodyRef.current.rotation();
+      scratch.quat.set(updatedR.x, updatedR.y, updatedR.z, updatedR.w);
       scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
       scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
+
+      // Light upright correction — only kicks in if the kart is
+      // significantly tilted (e.g. landed upside-down). We use a small
+      // torque, not a hard setRotation, so collisions still work.
+      const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(scratch.quat);
+      const tilt = new THREE.Vector3().crossVectors(localUp, scratch.up);
+      if (tilt.lengthSq() > 0.01) {
+        bodyRef.current.applyTorqueImpulse(
+          { x: tilt.x * 4 * delta, y: 0, z: tilt.z * 4 * delta },
+          true,
+        );
+      }
 
       // ---- compose final horizontal velocity ----
       // We blend the existing horizontal velocity toward the desired
@@ -234,9 +240,9 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
     }
 
     // ---- star pickup (distance based, cheap) ----
-    for (let i = 0; i < STAR_DATA.length; i++) {
+    for (let i = 0; i < STAR_POSITIONS.length; i++) {
       if (collectedStarsRef.current.has(i)) continue;
-      const sp = STAR_DATA[i].pos;
+      const sp = STAR_POSITIONS[i];
       const dx = sp.x - t.x;
       const dy = sp.y + STAR_VISUAL_LIFT - t.y;
       const dz = sp.z - t.z;
@@ -293,10 +299,20 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
 
     // ---- progress & lap completion ----
     const progress = progressAlongTrack(scratch.pos);
-    setProgress(progress);
-    if (progress < 0.2 && lastProgressRef.current > LAP_PROGRESS_THRESHOLD) {
-      // We've crossed from near-end back to start → completed a lap.
-      progressWrappedRef.current = true;
+    // Throttle progress updates to ~10 Hz so the HUD bar doesn't
+    // stutter fighting CSS transitions at 60 fps.
+    progressTickRef.current += delta;
+    if (progressTickRef.current >= 0.1) {
+      progressTickRef.current = 0;
+      setProgress(progress);
+    }
+    if (
+      progress < 0.2 &&
+      lastProgressRef.current > LAP_PROGRESS_THRESHOLD &&
+      lastProgressRef.current > 0.9
+    ) {
+      // Debounce: require the previous reading to be very close to 1.0
+      // so a momentary coarse-to-fine search misread cannot false-win.
       winRace();
     }
     lastProgressRef.current = progress;
@@ -321,7 +337,9 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
           bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
           bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
           stallTimerRef.current = 0;
-          onCollect?.(); // small UI feedback on respawn
+          // Distinct downward blip so the player hears "you got reset"
+          // (not the star-collect sound).
+          audio.blip(180, 0.18, "sine");
         }
       } else {
         stallTimerRef.current = 0;
@@ -387,9 +405,11 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         ccd
         position={getSpawnPose().position}
       >
-        {/* Single ball collider gives a forgiving arcade feel — the kart
-            never snags on geometry edges like an AABB would. */}
-        <BallCollider args={[0.85]} />
+        {/* Cuboid collider matching the chassis box so the kart sits on
+            the road surface (not floating above it). Half-extents are
+            chassis/2 (1.0 wide, 0.55 tall, 1.35 long). Offset down by
+            -0.05 so the wheels visibly poke out below the body. */}
+        <CuboidCollider args={[1.0, 0.55, 1.35]} position={[0, -0.05, 0]} />
 
         {/* Voxel kart visuals — purely decorative. We tilt the body slightly
             while turning by reading input each frame below. */}
@@ -519,23 +539,10 @@ export class AudioManager {
 export const audio = new AudioManager();
 
 // ---------------------------------------------------------------------
-// Boost strip detection — we use a deterministic set of positions
-// matching the visual strips in Track.tsx (same RNG/seed/stride) and
-// do a cheap per-frame distance check. The kart only boosts once per
-// strip and gets a small upward kick + forward velocity boost.
+// Boost strip detection — uses the imported BOOST_POSITIONS array
+// (same array that the visuals are rendered from). Per-frame distance
+// check, one-shot per strip, with a small upward + forward kick.
 // ---------------------------------------------------------------------
-import { mulberry32 as _rng } from "./mulberry32";
-const BOOST_STRIDE = 50;
 const BOOST_ACCEPT_RADIUS_SQ = 16; // 4 m
 const BOOST_FORWARD_BONUS = 14; // m/s added to target forward speed
 const BOOST_UP_BONUS = 6; // m/s upward kick for satisfying hop
-export const BOOST_POSITIONS: THREE.Vector3[] = (() => {
-  const rng = _rng(7);
-  const out: THREE.Vector3[] = [];
-  for (let i = 0; i < 600; i += BOOST_STRIDE) {
-    if (rng() < 0.55) {
-      out.push(TRACK_CURVE.getPointAt(i / 600).clone());
-    }
-  }
-  return out;
-})();

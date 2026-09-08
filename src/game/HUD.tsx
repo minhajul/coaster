@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useGameStore, formatTime } from "./useGameStore";
 import { audio } from "./Vehicle";
 
@@ -89,13 +89,26 @@ export function HUD({ inputRef }: HUDProps) {
       : "bg-black/40 border-white/30";
 
   // ---- countdown beeps in the last 3 seconds ----
+  // We use a ref to track the last integer-second we beeped for, so the
+  // beep fires exactly once per tick (avoids the multi-fire problem
+  // when the 50ms window re-triggers on the same second).
+  const lastBeepedSecRef = useRef<number>(-1);
   const wholeSec = Math.ceil(timeRemaining);
   useEffect(() => {
     if (status !== "racing" || paused) return;
-    if (wholeSec <= 3 && wholeSec > 0 && timeRemaining - wholeSec < 0.05) {
+    if (
+      wholeSec <= 3 &&
+      wholeSec > 0 &&
+      wholeSec !== lastBeepedSecRef.current
+    ) {
+      lastBeepedSecRef.current = wholeSec;
       audio.blip(wholeSec === 1 ? 440 : 660, 0.12, "square");
     }
-  }, [wholeSec, status, paused, timeRemaining]);
+    // Reset the ref so unpause/next race can re-beep normally.
+    if (wholeSec > 3) {
+      lastBeepedSecRef.current = -1;
+    }
+  }, [wholeSec, status, paused]);
 
   return (
     <div
@@ -149,7 +162,7 @@ export function HUD({ inputRef }: HUDProps) {
       <div className="absolute left-1/2 top-[88px] w-11/12 max-w-xl -translate-x-1/2 md:top-3 md:w-1/3">
         <div className="rounded-full border-2 border-white/30 bg-black/40 p-1 shadow backdrop-blur">
           <div
-            className="h-2 rounded-full bg-gradient-to-r from-emerald-400 via-emerald-300 to-emerald-200 transition-all duration-300"
+            className="h-2 rounded-full bg-gradient-to-r from-emerald-400 via-emerald-300 to-emerald-200"
             style={{ width: `${Math.min(100, progress * 100)}%` }}
           />
         </div>
@@ -226,6 +239,7 @@ export function HUD({ inputRef }: HUDProps) {
           onResume={() => setPaused(false)}
           onRestart={() => {
             restartRace();
+            setPaused(false);
           }}
         />
       )}

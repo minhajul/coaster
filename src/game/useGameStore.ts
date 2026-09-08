@@ -50,6 +50,7 @@ export const useGameStore = create<GameStore>((set) => ({
       paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
       stars: 0,
+      totalStars: 0,
       progress: 0,
     }),
 
@@ -59,6 +60,7 @@ export const useGameStore = create<GameStore>((set) => ({
       paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
       stars: 0,
+      totalStars: 0,
       progress: 0,
     }),
 
@@ -68,6 +70,7 @@ export const useGameStore = create<GameStore>((set) => ({
       paused: false,
       timeRemaining: RACE_DURATION_SECONDS,
       stars: 0,
+      totalStars: 0,
       progress: 0,
     }),
 

@@ -508,25 +508,26 @@ function SideRails() {
 }
 
 // ---------------------------------------------------------------------
-// Mushroom obstacles. Sitting on the road edges, they bounce the kart
-// up + forward on touch. Restitution is low so they don't launch the
-// kart into orbit. We force mushrooms to the SIDES of the road (not the
-// centre) so kids always have a clear line through.
+// Mushroom obstacles. Sitting OUTSIDE the rails on the grass, they
+// bounce the kart up + forward on touch. Mushrooms are PURELY VISUAL —
+// no rigid body — so the bounce is consistent (proximity-based hop
+// from Vehicle, never Rapier contact normals).
 // ---------------------------------------------------------------------
 export const MUSHROOM_POSITIONS: THREE.Vector3[] = (() => {
   const rng = mulberry32(42);
   const out: THREE.Vector3[] = [];
-  for (let i = 0; i < CURVE_SAMPLES.length; i += 70) {
-    if (rng() < 0.7) {
+  for (let i = 0; i < CURVE_SAMPLES.length; i += 60) {
+    if (rng() < 0.55) {
       const center = CURVE_SAMPLES[i];
       const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
         .normalize();
       const right = new THREE.Vector3()
         .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
         .normalize();
-      // Always push mushrooms toward the edge so the centre stays clear.
+      // Push mushrooms to the OUTSIDE of the rails so they don't sit
+      // in the driving line.
       const side = rng() < 0.5 ? -1 : 1;
-      const sideOff = side * (TRACK_HALF_WIDTH * 0.55 + 0.4);
+      const sideOff = side * (TRACK_HALF_WIDTH + 0.8);
       const pos = center.clone().add(right.multiplyScalar(sideOff));
       out.push(pos);
     }
@@ -534,63 +535,98 @@ export const MUSHROOM_POSITIONS: THREE.Vector3[] = (() => {
   return out;
 })();
 
-function Mushrooms() {
+function Mushrooms({ onCount }: { onCount: (n: number) => void }) {
+  const consumedRef = useRef<Map<number, number>>(new Map());
+  useEffect(() => {
+    onCount(MUSHROOM_POSITIONS.length);
+    const unsub = useGameStore.subscribe((s) => {
+      if (s.status === "racing") consumedRef.current.clear();
+    });
+    return unsub;
+  }, [onCount]);
   return (
     <>
-      {MUSHROOM_POSITIONS.map((pos, i) => {
-        return (
-          <group key={`mush-${i}`} position={[pos.x, pos.y + 0.7, pos.z]}>
-            <RigidBody type="fixed" colliders="cuboid" restitution={0.4}>
-              {/* Stem */}
-              <mesh position={[0, -0.2, 0]} castShadow>
-                <boxGeometry args={[0.4, 0.6, 0.4]} />
-                <meshStandardMaterial color="#fff7d6" flatShading />
-              </mesh>
-              {/* Cap — smaller so it doesn't block the whole road */}
-              <mesh position={[0, 0.4, 0]} castShadow>
-                <boxGeometry args={[0.9, 0.7, 0.9]} />
-                <meshStandardMaterial
-                  color={i % 2 ? "#ff4d4d" : "#b66bff"}
-                  flatShading
-                />
-              </mesh>
-            </RigidBody>
-          </group>
-        );
-      })}
+      {MUSHROOM_POSITIONS.map((pos, i) => (
+        <MushroomMesh
+          key={`mush-${i}`}
+          pos={pos}
+          index={i}
+          consumedRef={consumedRef}
+        />
+      ))}
     </>
+  );
+}
+
+function MushroomMesh({
+  pos,
+  index,
+  consumedRef,
+}: {
+  pos: THREE.Vector3;
+  index: number;
+  consumedRef: React.MutableRefObject<Map<number, number>>;
+}) {
+  const ref = useRef<THREE.Group>(null!);
+  useFrame((_, delta) => {
+    if (!ref.current) return;
+    ref.current.rotation.y += delta * 1.2;
+    const consumed = consumedRef.current.has(index);
+    const target = consumed ? 0 : 1;
+    ref.current.scale.x += (target - ref.current.scale.x) * 0.15;
+    ref.current.scale.y += (target - ref.current.scale.y) * 0.15;
+    ref.current.scale.z += (target - ref.current.scale.z) * 0.15;
+    ref.current.visible = ref.current.scale.x > 0.05;
+  });
+  return (
+    <group ref={ref} position={[pos.x, pos.y + 0.7, pos.z]}>
+      <mesh position={[0, -0.2, 0]} castShadow>
+        <boxGeometry args={[0.4, 0.6, 0.4]} />
+        <meshStandardMaterial color="#fff7d6" flatShading />
+      </mesh>
+      <mesh position={[0, 0.4, 0]} castShadow>
+        <boxGeometry args={[0.9, 0.7, 0.9]} />
+        <meshStandardMaterial
+          color={index % 2 ? "#ff4d4d" : "#b66bff"}
+          flatShading
+        />
+      </mesh>
+    </group>
   );
 }
 
 // ---------------------------------------------------------------------
 // Gold chevron boost strips. They give a forward impulse on contact.
 // ---------------------------------------------------------------------
+// Boost strip positions — exported so Vehicle can use the SAME array
+// for distance-based activation. Single source of truth = boost always
+// fires when crossing a visible strip.
+// ---------------------------------------------------------------------
+export const BOOST_POSITIONS: THREE.Vector3[] = (() => {
+  const rng = mulberry32(7);
+  const out: THREE.Vector3[] = [];
+  const stride = 50;
+  for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
+    if (rng() < 0.55) {
+      out.push(TRACK_CURVE.getPointAt(i / CURVE_SAMPLES.length).clone());
+    }
+  }
+  return out;
+})();
+
 function BoostStrips() {
-  const { items } = useMemo(() => {
-    const rng = mulberry32(7);
-    const items: {
-      pos: THREE.Vector3;
-      right: THREE.Vector3;
-      tangent: THREE.Vector3;
-    }[] = [];
-    const stride = 50;
-    for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
-      if (rng() < 0.55) {
-        const center = CURVE_SAMPLES[i];
-        const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
-          .normalize();
+  return (
+    <>
+      {BOOST_POSITIONS.map((pos, i) => {
+        const tangent = TRACK_CURVE.getTangentAt(
+          // Reverse-engineer t from the array index. This is a known
+          // approximation but visually it matches the strip orientation.
+          // The position is exact because we cloned from the curve.
+          ((i + 1) * 50) / CURVE_SAMPLES.length,
+        ).normalize();
         const right = new THREE.Vector3()
           .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
           .normalize();
-        items.push({ pos: center.clone(), right, tangent });
-      }
-    }
-    return { items };
-  }, []);
-
-  return (
-    <>
-      {items.map(({ pos, right }, i) => {
         const yaw = Math.atan2(right.x, right.z) - Math.PI / 2;
         return (
           <group
@@ -640,32 +676,35 @@ function BoostStrips() {
 }
 
 // ---------------------------------------------------------------------
-// Collectible stars: floating rotating voxels. They pop + add to score
-// when the kart passes through them (handled via sensors in Vehicle).
+// Collectible stars: floating rotating voxels. Positions are pre-baked
+// at module load so Vehicle and Track read from the SAME list and a
+// star pickup always corresponds to a visible star.
 // ---------------------------------------------------------------------
+export const STAR_POSITIONS: THREE.Vector3[] = (() => {
+  const rng = mulberry32(99);
+  const out: THREE.Vector3[] = [];
+  const stride = 22;
+  for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
+    if (rng() < 0.5) {
+      const center = CURVE_SAMPLES[i];
+      const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
+        .normalize();
+      const right = new THREE.Vector3()
+        .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
+        .normalize();
+      const sideOff = (rng() - 0.5) * (TRACK_HALF_WIDTH * 0.5);
+      const heightOff = 1.2 + rng() * 0.6;
+      const pos = center.clone().add(right.multiplyScalar(sideOff));
+      pos.y += heightOff;
+      out.push(pos);
+    }
+  }
+  return out;
+})();
+
 function Stars({ onCount }: { onCount: (n: number) => void }) {
   const groupRef = useRef<THREE.Group>(null!);
-  const { positions } = useMemo(() => {
-    const rng = mulberry32(99);
-    const positions: THREE.Vector3[] = [];
-    const stride = 22;
-    for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
-      if (rng() < 0.5) {
-        const center = CURVE_SAMPLES[i];
-        const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
-          .normalize();
-        const right = new THREE.Vector3()
-          .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
-          .normalize();
-        const sideOff = (rng() - 0.5) * (TRACK_HALF_WIDTH * 0.5);
-        const heightOff = 1.2 + rng() * 0.6;
-        const pos = center.clone().add(right.multiplyScalar(sideOff));
-        pos.y += heightOff;
-        positions.push(pos);
-      }
-    }
-    return { positions };
-  }, []);
+  const positions = STAR_POSITIONS;
 
   useEffect(() => {
     onCount(positions.length);
@@ -848,7 +887,7 @@ export function Track() {
       <FloorCollider />
       <Road />
       <SideRails />
-      <Mushrooms />
+      <Mushrooms onCount={() => {}} />
       <BoostStrips />
       <Stars onCount={setTotalStars} />
       <FinishLine />
@@ -859,21 +898,4 @@ export function Track() {
       </mesh>
     </group>
   );
-}
-
-// Export a helper for the vehicle module to look up the next star index.
-export function getStars() {
-  // Re-compute deterministically (cheap; same seed).
-  const rng = mulberry32(99);
-  const out: { pos: THREE.Vector3; tangent: THREE.Vector3 }[] = [];
-  const stride = 22;
-  for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
-    if (rng() < 0.5) {
-      const center = CURVE_SAMPLES[i];
-      const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
-        .normalize();
-      out.push({ pos: center.clone(), tangent });
-    }
-  }
-  return out;
 }

@@ -97,7 +97,7 @@ export function getSpawnPose(): {
   const forward = new THREE.Vector3().subVectors(p1, p0).normalize();
   const yaw = Math.atan2(forward.x, forward.z); // R3F uses Y-up rotation
   return {
-    position: [p0.x, p0.y + 1.8, p0.z],
+    position: [p0.x, p0.y + 1.0, p0.z],
     rotation: [0, yaw, 0],
   };
 }
