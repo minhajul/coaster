@@ -234,9 +234,11 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         true,
       );
 
-      // Also zero out angular velocity so the ball doesn't spin forever
-      // from accumulated torque / collisions.
-      bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      // We deliberately do NOT zero out angvel here — Rapier integrates
+      // angular velocity across substeps, so setting yaw once per frame
+      // (line 195) is enough. Zeroing it would clobber the turn we just
+      // applied. Roll/pitch are already corrected by the upright torque
+      // impulse above.
     }
 
     // ---- star pickup (distance based, cheap) ----
