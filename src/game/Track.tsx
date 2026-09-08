@@ -516,7 +516,10 @@ function SideRails() {
 export const MUSHROOM_POSITIONS: THREE.Vector3[] = (() => {
   const rng = mulberry32(42);
   const out: THREE.Vector3[] = [];
-  for (let i = 0; i < CURVE_SAMPLES.length; i += 60) {
+  // Skip the first SKIP_START samples so the kart's spawn zone is
+  // obstacle-free — no mushroom hop on the first frame of driving.
+  const SKIP_START = 80;
+  for (let i = SKIP_START; i < CURVE_SAMPLES.length; i += 60) {
     if (rng() < 0.55) {
       const center = CURVE_SAMPLES[i];
       const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)
@@ -606,7 +609,11 @@ export const BOOST_POSITIONS: THREE.Vector3[] = (() => {
   const rng = mulberry32(7);
   const out: THREE.Vector3[] = [];
   const stride = 50;
-  for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
+  // Skip the first SKIP_START samples so the kart's spawn zone (around
+  // sample 0) is obstacle-free. The kart needs ~1 second of clean road
+  // to get up to speed before hitting its first boost/star.
+  const SKIP_START = 80;
+  for (let i = SKIP_START; i < CURVE_SAMPLES.length; i += stride) {
     if (rng() < 0.55) {
       out.push(TRACK_CURVE.getPointAt(i / CURVE_SAMPLES.length).clone());
     }
@@ -684,7 +691,10 @@ export const STAR_POSITIONS: THREE.Vector3[] = (() => {
   const rng = mulberry32(99);
   const out: THREE.Vector3[] = [];
   const stride = 22;
-  for (let i = 0; i < CURVE_SAMPLES.length; i += stride) {
+  // Skip the first SKIP_START samples so the kart's spawn zone is
+  // obstacle-free — no star auto-pickup, no immediate boost ramp.
+  const SKIP_START = 80;
+  for (let i = SKIP_START; i < CURVE_SAMPLES.length; i += stride) {
     if (rng() < 0.5) {
       const center = CURVE_SAMPLES[i];
       const tangent = TRACK_CURVE.getTangentAt(i / CURVE_SAMPLES.length)

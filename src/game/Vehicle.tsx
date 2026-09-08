@@ -25,15 +25,22 @@ import {
 // =====================================================================
 
 // ---- tuning constants ----
-const ACCEL = 28; // m/s² forward acceleration (kid-friendly snappy)
-const REVERSE = 18; // m/s² reverse / brake
+// Acceleration is modeled as an exponential approach toward a target
+// speed. ACCEL_TIME is the time constant in seconds — roughly how
+// long it takes to reach ~63% of the target. A smaller value feels
+// snappy, a larger value feels smooth and floaty. 0.55s is a good
+// kid-friendly balance: the kart responds quickly to input but never
+// feels jerky.
+const ACCEL_TIME = 0.55;
+const REVERSE_TIME = 0.45;
 const MAX_SPEED = 22; // m/s top forward speed
+const MAX_REVERSE = 13; // m/s top reverse speed
 const TURN_RATE = 1.7; // radians / s — gentle steering for kids
 const MUSHROOM_HOP_Y = 6; // m/s upward hop from a mushroom bump
 const MUSHROOM_RADIUS_SQ = 1.5 * 1.5; // activation distance from mushroom
 const STAR_PICKUP_RADIUS = 2.4;
 const STAR_VISUAL_LIFT = 1.0; // stars float above the road
-const RESPAWN_STALL_SECONDS = 2.5;
+const RESPAWN_STALL_SECONDS = 1.2;
 // Finish line lives at the back-half of the lap (opposite the spawn).
 // We win when the kart crosses FINISH_T going forward after having
 // visited the pre-finish zone (> FINISH_T) earlier in this lap.
@@ -180,21 +187,30 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       const horizVel = new THREE.Vector3(v.x, 0, v.z);
       const forwardSpeed = scratch.forward.dot(horizVel);
 
-      // Target forward speed
-      let targetForward = forwardSpeed;
-      if (input.forward) targetForward += ACCEL * delta;
-      if (input.reverse) targetForward -= REVERSE * delta;
+      // Target forward speed — what the kart WANTS to be at right now.
+      let targetForward = 0;
+      if (input.forward) targetForward = MAX_SPEED;
+      if (input.reverse) targetForward = -MAX_REVERSE;
+      // No input → coast toward zero (gentle).
 
-      // Mild coast when no input (gentle — never stalls the kart)
-      if (!input.forward && !input.reverse) {
-        const drag = 2.5 * delta;
-        if (Math.abs(forwardSpeed) <= drag) targetForward = 0;
-        else targetForward = forwardSpeed - Math.sign(forwardSpeed) * drag;
-      }
-
-      targetForward = Math.max(
-        -MAX_SPEED * 0.6,
-        Math.min(MAX_SPEED, targetForward),
+      // ---- exponential approach toward target ----
+      // Instead of a fixed accel * delta (which gives linear ramps and
+      // jerky direction changes), we blend current speed toward target
+      // by a frame-rate-independent factor. This gives a buttery-smooth
+      // exponential ramp: 63% of remaining gap closed every ACCEL_TIME
+      // seconds. Releasing the throttle has the same smooth ramp-down.
+      // Time constants chosen so the kart feels responsive (0.55s to
+      // ~63% of top speed) but never twitchy.
+      const tau =
+        targetForward >= 0
+          ? ACCEL_TIME
+          : REVERSE_TIME;
+      // alpha = 1 - exp(-delta / tau), frame-rate-independent.
+      const alpha = 1 - Math.exp(-delta / tau);
+      const newForwardSpeed = forwardSpeed + (targetForward - forwardSpeed) * alpha;
+      const clampedForward = Math.max(
+        -MAX_REVERSE,
+        Math.min(MAX_SPEED, newForwardSpeed),
       );
 
       // ---- steering: directly control yaw via setRotation ----
@@ -229,7 +245,7 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       // permanently slide sideways into a stuck state.
       const newForwardVel = scratch.forward
         .clone()
-        .multiplyScalar(targetForward);
+        .multiplyScalar(clampedForward);
       // Preserve a small fraction of lateral velocity (kid-friendly drift
       // feel) but never all of it — that would cause permanent slides.
       const lateralVel = scratch.right
@@ -382,12 +398,18 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       .add(scratch.forward.clone().multiplyScalar(-6.5))
       .add(new THREE.Vector3(0, 3.8, 0));
 
-    // Position lerp (faster) + lookAt lerp (faster still) for snappy follow.
-    camera.position.lerp(scratch.camDesired, Math.min(1, delta * 8));
+    // Position lerp (frame-rate-independent exponential). A larger
+    // CAM_LERP_TIME means the camera trails more (smoother, less
+    // twitchy on bumpy terrain). 0.10s gives a tight buttery follow.
+    const CAM_LERP_TIME = 0.10;
+    const camAlpha = 1 - Math.exp(-delta / CAM_LERP_TIME);
+    camera.position.lerp(scratch.camDesired, camAlpha);
     const currentLook = new THREE.Vector3();
     camera.getWorldDirection(currentLook);
     currentLook.multiplyScalar(10).add(camera.position);
-    const newLook = currentLook.lerp(scratch.camTarget, Math.min(1, delta * 10));
+    const LOOK_LERP_TIME = 0.08;
+    const lookAlpha = 1 - Math.exp(-delta / LOOK_LERP_TIME);
+    const newLook = currentLook.lerp(scratch.camTarget, lookAlpha);
     camera.lookAt(newLook);
 
     // Speed used by camera FOV punch and body tilt below.
