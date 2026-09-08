@@ -302,35 +302,55 @@ function mulberry32(seed: number) {
 // ---------------------------------------------------------------------
 function Road() {
   const geometry = useRoadGeometry();
+  // Per-segment flat cuboid colliders, oriented along the curve tangent.
+  // This is far more robust than a TrimeshCollider for an arcade ball —
+  // trimeshes are slow and can clip when the ball rolls at speed.
+  const colliders = useMemo(() => {
+    const out: {
+      position: [number, number, number];
+      size: [number, number, number];
+      yaw: number;
+    }[] = [];
+    const stride = 4; // every 4th sample ≈ 150 slabs around the loop
+    for (let i = 0; i <= CURVE_SAMPLES.length; i += stride) {
+      const t = i / CURVE_SAMPLES.length;
+      const center = TRACK_CURVE.getPointAt(t);
+      const tangent = TRACK_CURVE.getTangentAt(t).normalize();
+      const yaw = Math.atan2(tangent.x, tangent.z);
+      // Width is the road diameter, length is the segment spacing along
+      // the curve, thickness is thick enough to catch the ball reliably.
+      out.push({
+        position: [center.x, center.y, center.z],
+        size: [TRACK_HALF_WIDTH * 2, ROAD_THICKNESS, 0.9],
+        yaw,
+      });
+    }
+    return out;
+  }, []);
   return (
     <>
       <mesh geometry={geometry} receiveShadow>
         <meshStandardMaterial vertexColors flatShading />
       </mesh>
-      {/* Rapier trimesh collider built from the same road geometry, so
-          the kart rolls on the actual ribbon (not the floor 3 m below). */}
-      <RigidBody type="fixed" colliders={false} friction={0.9}>
-        <RoadTrimeshCollider geometry={geometry} />
-      </RigidBody>
+      {/* One CuboidCollider per road segment. Bulletproof for arcade play. */}
+      <group>
+        {colliders.map((c, i) => (
+          <RigidBody
+            key={`road-col-${i}`}
+            type="fixed"
+            colliders={false}
+            position={c.position}
+            rotation={[0, c.yaw, 0]}
+          >
+            <CuboidCollider
+              args={[c.size[0] / 2, c.size[1] / 2, c.size[2] / 2]}
+              friction={1.0}
+              restitution={0.02}
+            />
+          </RigidBody>
+        ))}
+      </group>
     </>
-  );
-}
-
-// Dedicated collider component so we can call useMemo on the geometry
-// without re-running the heavy buffer setup on every parent render.
-function RoadTrimeshCollider({ geometry }: { geometry: THREE.BufferGeometry }) {
-  const { vertices, indices } = useMemo(() => {
-    const pos = geometry.getAttribute("position").array as Float32Array;
-    const idx = geometry.getIndex()?.array as Uint32Array | undefined;
-    return { vertices: pos, indices: idx ?? null };
-  }, [geometry]);
-  if (!indices) return null;
-  return (
-    <TrimeshCollider
-      args={[vertices, indices]}
-      friction={0.9}
-      restitution={0.05}
-    />
   );
 }
 

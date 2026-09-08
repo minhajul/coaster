@@ -21,10 +21,10 @@ import { getStars } from "./Track";
 // =====================================================================
 
 // ---- tuning constants ----
-const ACCEL = 22; // m/s² forward acceleration (kid-friendly snappy)
-const REVERSE = 14; // m/s² reverse / brake
+const ACCEL = 28; // m/s² forward acceleration (kid-friendly snappy)
+const REVERSE = 18; // m/s² reverse / brake
 const MAX_SPEED = 22; // m/s top forward speed
-const TURN_RATE = 2.4; // radians / s
+const TURN_RATE = 2.6; // radians / s
 const BOOST_IMPULSE = 12; // instant forward velocity kick
 const MUSHROOM_IMPULSE_Y = 9;
 const MUSHROOM_IMPULSE_FWD = 5;
@@ -163,24 +163,38 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       // Scale turning by speed so a stationary kart doesn't spin in place
       // but is still very responsive in motion — perfect arcade feel.
       const speed = Math.hypot(v.x, v.z);
-      const speedFactor = Math.min(1, speed / 3);
+      const speedFactor = Math.min(1, Math.max(0.3, speed / 3));
       const yawDelta =
         (input.left ? TURN_RATE : 0) + (input.right ? -TURN_RATE : 0);
       const yawAmount = yawDelta * speedFactor * delta;
+      // Build a yaw-only quaternion and slerp the body toward it. This
+      // both rotates the kart AND keeps it perfectly upright every frame
+      // — no torque impulse needed, no spinning out.
       if (yawAmount !== 0) {
-        const yq = new THREE.Quaternion().setFromAxisAngle(
+        const yawQuat = new THREE.Quaternion().setFromAxisAngle(
           new THREE.Vector3(0, 1, 0),
           yawAmount,
         );
-        scratch.quat.premultiply(yq);
-        bodyRef.current.setRotation(
-          { x: scratch.quat.x, y: scratch.quat.y, z: scratch.quat.z, w: scratch.quat.w },
-          true,
-        );
-        // recompute forward/right after rotation
-        scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
-        scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
+        scratch.quat.premultiply(yawQuat).normalize();
       }
+      // Always re-orthonormalise to upright (zero roll/pitch), so bumps
+      // and bounces never leave the kart flipped over.
+      const e = new THREE.Euler().setFromQuaternion(scratch.quat, "YXZ");
+      e.x = 0;
+      e.z = 0;
+      scratch.quat.setFromEuler(e);
+      bodyRef.current.setRotation(
+        {
+          x: scratch.quat.x,
+          y: scratch.quat.y,
+          z: scratch.quat.z,
+          w: scratch.quat.w,
+        },
+        true,
+      );
+      // recompute forward/right after rotation
+      scratch.forward.set(0, 0, 1).applyQuaternion(scratch.quat);
+      scratch.right.set(1, 0, 0).applyQuaternion(scratch.quat);
 
       // ---- compose final horizontal velocity ----
       // Keep lateral velocity low (arcade grip) and apply new forward speed.
@@ -190,20 +204,15 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
       const desiredHorizontal = scratch.forward
         .clone()
         .multiplyScalar(targetForward)
-        .add(lateralComponent.multiplyScalar(0.25)); // damp lateral, not zero
+        .add(lateralComponent.multiplyScalar(0.2)); // damp lateral
       bodyRef.current.setLinvel(
         { x: desiredHorizontal.x, y: v.y, z: desiredHorizontal.z },
         true,
       );
 
-      // Gentle upright torque — keeps the kart from flipping forever.
-      // We compare kart's local up with world up and add a correction.
-      const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(scratch.quat);
-      const tilt = new THREE.Vector3().crossVectors(localUp, scratch.up);
-      bodyRef.current.applyTorqueImpulse(
-        { x: tilt.x * 8 * delta, y: 0, z: tilt.z * 8 * delta },
-        true,
-      );
+      // Also zero out angular velocity so the ball doesn't spin forever
+      // from accumulated torque / collisions.
+      bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
     }
 
     // ---- star pickup (distance based, cheap) ----
@@ -280,7 +289,7 @@ export function Vehicle({ inputRef, onCollect }: VehicleProps) {
         ref={bodyRef}
         colliders={false}
         mass={1.4}
-        angularDamping={0.6}
+        angularDamping={0}
         linearDamping={0.05}
         restitution={0.1}
         friction={0.8}
