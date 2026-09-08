@@ -368,23 +368,29 @@ function Road() {
   // Per-segment flat cuboid colliders, oriented along the curve tangent.
   // This is far more robust than a TrimeshCollider for an arcade ball —
   // trimeshes are slow and can clip when the ball rolls at speed.
+  //
+  // IMPORTANT: the road mesh top sits at center.y + ROAD_THICKNESS and
+  // the bottom at center.y - ROAD_THICKNESS, so the collider must span
+  // the full 2*ROAD_THICKNESS and be offset upward to align with the
+  // visible ribbon top. Otherwise the ball drops through.
   const colliders = useMemo(() => {
     const out: {
       position: [number, number, number];
       size: [number, number, number];
       yaw: number;
     }[] = [];
-    const stride = 4; // every 4th sample ≈ 150 slabs around the loop
+    const stride = 3; // every 3rd sample ≈ 200 slabs around the loop
     for (let i = 0; i <= CURVE_SAMPLES.length; i += stride) {
       const t = i / CURVE_SAMPLES.length;
       const center = TRACK_CURVE.getPointAt(t);
       const tangent = TRACK_CURVE.getTangentAt(t).normalize();
       const yaw = Math.atan2(tangent.x, tangent.z);
-      // Width is the road diameter, length is the segment spacing along
-      // the curve, thickness is thick enough to catch the ball reliably.
+      // Width = road diameter, length = slab length along curve, height
+      // = full mesh thickness (top to bottom of the ribbon) so the
+      // ball can't squeeze between colliders or sink below the road.
       out.push({
         position: [center.x, center.y, center.z],
-        size: [TRACK_HALF_WIDTH * 2, ROAD_THICKNESS, 0.9],
+        size: [TRACK_HALF_WIDTH * 2, ROAD_THICKNESS * 2, 1.2],
         yaw,
       });
     }
