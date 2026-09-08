@@ -504,6 +504,18 @@ export function useKeyboardControls(inputRef: React.MutableRefObject<{
   useEffect(() => {
     const map = (e: KeyboardEvent, down: boolean) => {
       const k = e.key.toLowerCase();
+      // Suppress browser default for arrow keys so they cannot scroll
+      // the page (overflow:hidden stops visible scroll, but some
+      // browsers still steal focus from the canvas when arrow keys
+      // are pressed).
+      if (
+        k === "arrowup" ||
+        k === "arrowdown" ||
+        k === "arrowleft" ||
+        k === "arrowright"
+      ) {
+        e.preventDefault();
+      }
       if (k === "w" || k === "arrowup") inputRef.current.forward = down;
       if (k === "s" || k === "arrowdown") inputRef.current.reverse = down;
       if (k === "a" || k === "arrowleft") inputRef.current.left = down;
@@ -511,11 +523,19 @@ export function useKeyboardControls(inputRef: React.MutableRefObject<{
     };
     const down = (e: KeyboardEvent) => map(e, true);
     const up = (e: KeyboardEvent) => map(e, false);
+    // Listen on both window AND document — some browsers route
+    // keydown to document first when focus is on a child element
+    // (e.g. the canvas), so a window-only listener can miss the
+    // event in some setups.
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
+    document.addEventListener("keydown", down);
+    document.addEventListener("keyup", up);
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
+      document.removeEventListener("keydown", down);
+      document.removeEventListener("keyup", up);
     };
   }, [inputRef]);
 }
