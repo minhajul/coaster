@@ -29,5 +29,5 @@ node_modules/.cache
 
 
 # Cloudflare
-.wrangler/
+.cloudflare/
 .dev.vars

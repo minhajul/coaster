@@ -10,14 +10,14 @@ ChunkCoaster: a single-page, voxel-style 3D kart racer in the browser. React 18 
 
 ```bash
 npm run dev        # Vite dev server on http://localhost:5173
-npm run build      # tsc -b (typecheck, noEmit) && vite build → dist/
-npm run preview    # serve the production build
+npm run build      # tsc -b (typecheck, noEmit) && vite build
+npm run preview    # preview the production build in the Workers runtime
 npx tsc -b         # typecheck only
-npm run deploy     # build, then wrangler deploy to Cloudflare Workers (static assets)
-npm run cf:preview # build, then serve dist/ locally through wrangler dev
+npm run deploy     # cf deploy: builds via Vite, uploads to Cloudflare Workers
+cf deploy --dry-run  # build + validate without uploading
 ```
 
-Deployment is an assets-only Worker configured in `wrangler.jsonc` (uploads `dist/`, SPA fallback). Wrangler is a devDependency; the Cloudflare login lives in the user's wrangler config dir, not the repo.
+Toolchain: Vite 8 (Rolldown), TypeScript 7, `@vitejs/plugin-react` 6, `@cloudflare/vite-plugin` (beta). Deployment uses Cloudflare's `cf` CLI (open beta, installed globally, login via `cf auth login`), not Wrangler. The Worker is assets-only and defined in `cloudflare.config.ts`; the Vite plugin in `vite.config.ts` writes the build output `cf` expects to `.cloudflare/output/` (gitignored). A "failed to connect to the docker API" line during `cf deploy` is a harmless containers probe.
 
 There is no test suite. `.oxlintrc.json` is checked in (rules-of-hooks = error, only-export-components = warn) but oxlint is not a devDependency; `npx oxlint` will prompt to download it.
 
