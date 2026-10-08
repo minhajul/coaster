@@ -13,7 +13,11 @@ npm run dev        # Vite dev server on http://localhost:5173
 npm run build      # tsc -b (typecheck, noEmit) && vite build → dist/
 npm run preview    # serve the production build
 npx tsc -b         # typecheck only
+npm run deploy     # build, then wrangler deploy to Cloudflare Workers (static assets)
+npm run cf:preview # build, then serve dist/ locally through wrangler dev
 ```
+
+Deployment is an assets-only Worker configured in `wrangler.jsonc` (uploads `dist/`, SPA fallback). Wrangler is a devDependency; the Cloudflare login lives in the user's wrangler config dir, not the repo.
 
 There is no test suite. `.oxlintrc.json` is checked in (rules-of-hooks = error, only-export-components = warn) but oxlint is not a devDependency; `npx oxlint` will prompt to download it.
 
