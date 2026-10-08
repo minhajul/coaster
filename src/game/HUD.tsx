@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useGameStore, formatTime, formatTimePrecise } from "./useGameStore";
+import { useGameStore, formatTime, formatTimePrecise, TOTAL_LAPS } from "./useGameStore";
 import { audio } from "./audio";
 import { MiniMap } from "./MiniMap";
 
@@ -38,6 +38,7 @@ export function HUD({
   const stars = useGameStore((s) => s.stars);
   const totalStars = useGameStore((s) => s.totalStars);
   const progress = useGameStore((s) => s.progress);
+  const lap = useGameStore((s) => s.lap);
   const speedKmh = useGameStore((s) => s.speedKmh);
   const isBoosted = useGameStore((s) => s.isBoosted);
   const muted = useGameStore((s) => s.muted);
@@ -137,6 +138,14 @@ export function HUD({
     }
   }, [status]);
 
+  // Lap-complete jingle (not on lap 1, which is the start).
+  useEffect(() => {
+    if (lap > 1 && status === "racing") {
+      audio.blip(880, 0.12, "square");
+      setTimeout(() => audio.blip(1320, 0.18, "square"), 130);
+    }
+  }, [lap, status]);
+
   return (
     <div
       className="pointer-events-none absolute inset-0 z-10 select-none font-sans"
@@ -148,16 +157,16 @@ export function HUD({
       )}
 
       {/* ===================== TOP BAR ===================== */}
-      <div className="absolute left-0 right-0 top-0 flex items-start justify-between gap-2 p-3">
+      <div className="absolute left-0 right-0 top-0 flex items-start justify-between gap-2 p-2 sm:p-3">
         {/* Left: Timer & Personal Best */}
         <div className="flex flex-col gap-1.5">
           <div
-            className={`pointer-events-auto rounded-2xl border-2 px-4 py-2 shadow-lg backdrop-blur transition-colors ${timerBg}`}
+            className={`pointer-events-auto rounded-2xl border-2 px-3 py-1.5 shadow-lg backdrop-blur transition-colors sm:px-4 sm:py-2 ${timerBg}`}
           >
             <div className="text-[10px] font-extrabold uppercase tracking-widest text-white/70">
               Time
             </div>
-            <div className={`text-3xl font-black tabular-nums tracking-wider ${timerColour}`}>
+            <div className={`text-2xl font-black tabular-nums tracking-wider sm:text-3xl ${timerColour}`}>
               {formatTime(timeRemaining)}
             </div>
           </div>
@@ -178,21 +187,21 @@ export function HUD({
             />
           </div>
           <div className="mt-1 text-[11px] font-black uppercase tracking-widest text-white/90 drop-shadow">
-            Lap Progress · {Math.round(progress * 100)}%
+            Lap {lap}/{TOTAL_LAPS} · {Math.round(progress * 100)}%
           </div>
         </div>
 
         {/* Right: Stars, Controls & Radar */}
         <div className="flex flex-col items-end gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             {/* Camera View Switcher */}
             <button
               onClick={cycleCameraMode}
-              className="pointer-events-auto flex items-center gap-1 rounded-xl border border-white/30 bg-black/50 px-3 py-1.5 text-xs font-bold text-white shadow hover:bg-black/70 backdrop-blur"
+              className="pointer-events-auto flex items-center gap-1 rounded-xl border border-white/30 bg-black/50 px-2 py-1.5 text-xs font-bold text-white shadow hover:bg-black/70 backdrop-blur sm:px-3"
               title="Change Camera View (C)"
             >
               <span>🎥</span>
-              <span className="uppercase text-[10px] tracking-wider">
+              <span className="hidden uppercase text-[10px] tracking-wider sm:inline">
                 {cameraMode}
               </span>
             </button>
@@ -200,7 +209,7 @@ export function HUD({
             {/* Mute Button */}
             <button
               onClick={toggleMute}
-              className="pointer-events-auto rounded-xl border border-white/30 bg-black/50 p-1.5 text-lg shadow hover:bg-black/70 backdrop-blur"
+              className="pointer-events-auto rounded-xl border border-white/30 bg-black/50 p-1 text-base shadow hover:bg-black/70 backdrop-blur sm:p-1.5 sm:text-lg"
               title="Toggle Audio (M)"
             >
               {muted ? "🔇" : "🔊"}
@@ -210,7 +219,7 @@ export function HUD({
             {status === "racing" && (
               <button
                 onClick={() => setPaused(true)}
-                className="pointer-events-auto rounded-xl border border-white/30 bg-black/50 p-1.5 text-lg shadow hover:bg-black/70 backdrop-blur"
+                className="pointer-events-auto rounded-xl border border-white/30 bg-black/50 p-1 text-base shadow hover:bg-black/70 backdrop-blur sm:p-1.5 sm:text-lg"
                 title="Pause (P)"
               >
                 ⏸
@@ -218,11 +227,11 @@ export function HUD({
             )}
 
             {/* Stars Counter */}
-            <div className="pointer-events-auto rounded-2xl border-2 border-white/30 bg-black/50 px-4 py-2 text-center shadow-lg backdrop-blur">
+            <div className="pointer-events-auto rounded-2xl border-2 border-white/30 bg-black/50 px-2.5 py-1.5 text-center shadow-lg backdrop-blur sm:px-4 sm:py-2">
               <div className="text-[10px] font-extrabold uppercase tracking-widest text-white/70">
                 Stars
               </div>
-              <div className="flex items-center gap-1.5 text-2xl font-black text-yellow-300">
+              <div className="flex items-center gap-1.5 text-xl font-black text-yellow-300 sm:text-2xl">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="#ffd633">
                   <polygon points="12,2 15,9 22,9 17,14 19,21 12,17 5,21 7,14 2,9 9,9" />
                 </svg>
@@ -234,7 +243,7 @@ export function HUD({
           </div>
 
           {/* Radar Mini-Map */}
-          <div className="pointer-events-auto mt-1">
+          <div className="pointer-events-auto mt-1 origin-top-right scale-[0.68] sm:scale-100">
             <MiniMap
               kartPosRef={kartPosRef}
               kartYawRef={kartYawRef}
@@ -315,6 +324,7 @@ export function HUD({
           stars={stars}
           total={totalStars}
           progress={progress}
+          lap={lap}
           onRestart={() => {
             restartRace();
             setPaused(false);
@@ -449,7 +459,7 @@ function StartModal({
       </p>
 
       <div className="mx-auto mb-4 max-w-xs space-y-1.5 rounded-2xl bg-white/10 p-3.5 text-left text-xs leading-relaxed text-white/95">
-        <div>🏁 <b>Goal:</b> Drive 1 complete lap and cross the checkered line!</div>
+        <div>🏁 <b>Goal:</b> Race {TOTAL_LAPS} laps and cross the checkered line!</div>
         <div>⭐ <b>Stars:</b> Collect stars scattered along the road!</div>
         <div>⚡ <b>Yellow Stripes:</b> Hit them for instant Nitro Boost!</div>
         <div>🍄 <b>Mushrooms:</b> Bounce high into the air!</div>
@@ -541,11 +551,13 @@ function LoseModal({
   stars,
   total,
   progress,
+  lap,
   onRestart,
 }: {
   stars: number;
   total: number;
   progress: number;
+  lap: number;
   onRestart: () => void;
 }) {
   const pct = Math.round(progress * 100);
@@ -557,7 +569,7 @@ function LoseModal({
         Time&apos;s Up!
       </h1>
       <p className="mb-4 text-sm text-white/90">
-        You completed <b>{pct}%</b> of the lap and grabbed <b>⭐ {stars}</b> stars.
+        You reached lap <b>{lap}/{TOTAL_LAPS}</b> ({pct}% done) and grabbed <b>⭐ {stars}</b> stars.
       </p>
 
       <button

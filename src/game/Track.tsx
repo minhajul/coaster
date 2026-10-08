@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
-import {
-  CuboidCollider,
-  RigidBody,
-  TrimeshCollider,
-} from "@react-three/rapier";
 import { useGameStore } from "./useGameStore";
 import {
   CONTROL_POINTS,
@@ -349,129 +344,22 @@ function HillFloor() {
 }
 
 // ---------------------------------------------------------------------
-// Road mesh itself. Static — no rigid body needed because the kart's
-// collision comes from the side rails and the floor. We only need a
-// visual + invisible underside collider so the kart can't dive under.
-// ---------------------------------------------------------------------
-// ---------------------------------------------------------------------
-// Smooth rail collision geometry: a continuous ribbon barrier along
-// the left and right edges of the road. With Rapier trimesh collider,
-// it gives an impenetrable, smooth, gap-free barrier that never snags.
-// ---------------------------------------------------------------------
-// Smooth rail collision geometry: a continuous 3D ribbon barrier along
-// the left and right edges of the road. With Rapier trimesh collider,
-// it gives an impenetrable, thick 3D barrier that prevents tunneling.
-// ---------------------------------------------------------------------
-function useRailsGeometry() {
-  return useMemo(() => {
-    const geometry = new THREE.BufferGeometry();
-    const positions: number[] = [];
-    const indices: number[] = [];
-    const segments = CURVE_SAMPLES.length;
-    const railHeight = 2.4;
-    const off = TRACK_HALF_WIDTH + 0.15;
-    const railThick = 0.8;
-
-    for (let i = 0; i <= segments; i++) {
-      const t = i / segments;
-      const center = TRACK_CURVE.getPointAt(t);
-      const tangent = TRACK_CURVE.getTangentAt(t).normalize();
-      const right = new THREE.Vector3()
-        .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
-        .normalize();
-
-      const botY = center.y + ROAD_THICKNESS - 0.4;
-      const topY = center.y + ROAD_THICKNESS + railHeight;
-
-      // Left rail: inner bottom (0), inner top (1), outer top (2), outer bottom (3)
-      const lInnerX = center.x + right.x * off;
-      const lInnerZ = center.z + right.z * off;
-      const lOuterX = center.x + right.x * (off + railThick);
-      const lOuterZ = center.z + right.z * (off + railThick);
-
-      positions.push(
-        lInnerX, botY, lInnerZ,
-        lInnerX, topY, lInnerZ,
-        lOuterX, topY, lOuterZ,
-        lOuterX, botY, lOuterZ,
-      );
-
-      // Right rail: inner bottom (4), inner top (5), outer top (6), outer bottom (7)
-      const rInnerX = center.x - right.x * off;
-      const rInnerZ = center.z - right.z * off;
-      const rOuterX = center.x - right.x * (off + railThick);
-      const rOuterZ = center.z - right.z * (off + railThick);
-
-      positions.push(
-        rInnerX, botY, rInnerZ,
-        rInnerX, topY, rInnerZ,
-        rOuterX, topY, rOuterZ,
-        rOuterX, botY, rOuterZ,
-      );
-    }
-
-    const ringSize = 8;
-    for (let i = 0; i < segments; i++) {
-      const curr = i * ringSize;
-      const next = (i + 1) * ringSize;
-
-      // Left rail quads (inner face facing road, top face, outer face)
-      indices.push(curr + 0, next + 0, next + 1);
-      indices.push(curr + 0, next + 1, curr + 1);
-      indices.push(curr + 0, next + 1, next + 0);
-      indices.push(curr + 0, curr + 1, next + 1);
-
-      indices.push(curr + 1, next + 1, next + 2);
-      indices.push(curr + 1, next + 2, curr + 2);
-
-      indices.push(curr + 2, next + 2, next + 3);
-      indices.push(curr + 2, next + 3, curr + 3);
-
-      // Right rail quads (inner face facing road, top face, outer face)
-      indices.push(curr + 4, next + 5, next + 4);
-      indices.push(curr + 4, curr + 5, next + 5);
-      indices.push(curr + 4, next + 4, next + 5);
-      indices.push(curr + 4, next + 5, curr + 5);
-
-      indices.push(curr + 5, next + 6, next + 5);
-      indices.push(curr + 5, curr + 6, next + 6);
-
-      indices.push(curr + 6, next + 7, next + 6);
-      indices.push(curr + 6, curr + 7, next + 7);
-    }
-
-    geometry.setIndex(indices);
-    geometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(positions, 3),
-    );
-    geometry.computeVertexNormals();
-    return geometry;
-  }, []);
-}
-
-// ---------------------------------------------------------------------
-// Road mesh with continuous trimesh collision. Perfectly matches the
-// 3D curved surface with zero cracks, zero lips, and smooth riding.
+// Road mesh. Purely visual: the kart rides the spline in Vehicle.tsx.
 // ---------------------------------------------------------------------
 function Road() {
   const geometry = useRoadGeometry();
   return (
-    <RigidBody type="fixed" colliders="trimesh" friction={0.05} restitution={0.02}>
-      <mesh geometry={geometry} receiveShadow>
-        <meshStandardMaterial vertexColors flatShading />
-      </mesh>
-    </RigidBody>
+    <mesh geometry={geometry} receiveShadow>
+      <meshStandardMaterial vertexColors flatShading />
+    </mesh>
   );
 }
 
 // ---------------------------------------------------------------------
-// Soft side rails: chunky bouncy cubes lining the road, backed by a
-// continuous smooth trimesh barrier for bulletproof containment.
+// Side rails: chunky white cubes lining the road. Visual only; the
+// lateral clamp in Vehicle.tsx keeps the kart between them.
 // ---------------------------------------------------------------------
 function SideRails() {
-  const railsGeometry = useRailsGeometry();
-
   const { rails } = useMemo(() => {
     const positions: { pos: THREE.Vector3; right: THREE.Vector3 }[] = [];
     const step = 3; // every Nth sample
@@ -513,11 +401,6 @@ function SideRails() {
 
   return (
     <>
-      {/* Continuous smooth guard-rail physics barrier */}
-      <RigidBody type="fixed" colliders="trimesh" friction={0.05} restitution={0.4}>
-        <mesh geometry={railsGeometry} visible={false} />
-      </RigidBody>
-
       {/* Left rail: white sugar cubes */}
       <instancedMesh
         ref={railLeftRef}
@@ -546,7 +429,7 @@ function SideRails() {
 // Mushroom obstacles. Sitting OUTSIDE the rails on the grass, they
 // bounce the kart up + forward on touch. Mushrooms are PURELY VISUAL —
 // no rigid body — so the bounce is consistent (proximity-based hop
-// from Vehicle, never Rapier contact normals).
+// from Vehicle, never physics contacts).
 // ---------------------------------------------------------------------
 export const MUSHROOM_POSITIONS: THREE.Vector3[] = (() => {
   const rng = mulberry32(42);
@@ -676,12 +559,7 @@ function BoostStrips() {
             position={[pos.x, pos.y + 0.05, pos.z]}
             rotation={[0, yaw, 0]}
           >
-            <RigidBody type="fixed" sensor colliders={false}>
-              {/* The sensor body */}
-              <mesh visible={false}>
-                <boxGeometry args={[TRACK_HALF_WIDTH * 2, 0.2, 2.2]} />
-              </mesh>
-              {/* Visual chevrons */}
+            <>
               <mesh position={[0, 0.05, -0.8]}>
                 <boxGeometry args={[TRACK_HALF_WIDTH * 1.6, 0.1, 0.4]} />
                 <meshStandardMaterial
@@ -709,7 +587,7 @@ function BoostStrips() {
                   flatShading
                 />
               </mesh>
-            </RigidBody>
+            </>
           </group>
         );
       })}
@@ -805,13 +683,13 @@ function Stars({ onCount }: { onCount: (n: number) => void }) {
 }
 
 // ---------------------------------------------------------------------
-// Checkered finish line. Sits at sample 0.5 of the curve — directly
-// opposite the spawn point — so the player starts at the START arrow
-// and only sees "FINISH" after completing a full lap.
+// Checkered start/finish line at t=0. The kart spawns a few metres
+// past it (see getSpawnPose) so the banner is behind the player at the
+// start and each lap ends exactly where the lap check fires (the wrap
+// from progress ~1 back to ~0 in Vehicle.tsx).
 // ---------------------------------------------------------------------
 function FinishLine() {
-  // Place finish at t=0.5 (halfway around the loop, opposite spawn).
-  const FINISH_T = 0.5;
+  const FINISH_T = 0;
   const start = TRACK_CURVE.getPointAt(FINISH_T);
   const tangent = TRACK_CURVE.getTangentAt(FINISH_T).normalize();
   const right = new THREE.Vector3()
@@ -913,18 +791,6 @@ function FinishLine() {
 }
 
 // ---------------------------------------------------------------------
-// Floor collider: a single big plane sitting under the world so the
-// kart never falls into the abyss even when it bounces off rails.
-// ---------------------------------------------------------------------
-function FloorCollider() {
-  return (
-    <RigidBody type="fixed" colliders={false} friction={0.6}>
-      <CuboidCollider args={[200, 0.5, 200]} position={[0, -3, 0]} />
-    </RigidBody>
-  );
-}
-
-// ---------------------------------------------------------------------
 // Top-level Track component exported to App.tsx
 // ---------------------------------------------------------------------
 export function Track() {
@@ -933,7 +799,6 @@ export function Track() {
   return (
     <group>
       <HillFloor />
-      <FloorCollider />
       <Road />
       <SideRails />
       <Mushrooms onCount={() => {}} />

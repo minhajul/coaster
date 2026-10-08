@@ -87,20 +87,21 @@ export function progressAlongTrack(pos: THREE.Vector3): number {
   return Math.min(1, Math.max(0, bestT));
 }
 
-// Spawn / respawn pose for the kart. Faces the direction of travel.
-// Spawn height: chassis bottom = p0.y + 1.5 - 0.6 = p0.y + 0.9. The road
-// top is at p0.y + 0.6, so the kart starts 0.3 above the road and
-// settles cleanly without intersecting the collider.
+/** Where the kart starts, as a curve parameter. Just past the
+ *  start/finish line (t=0) so the banner is behind the player. */
+export const SPAWN_T = 0.03;
+
+// Spawn pose for the kart, facing the direction of travel. The y value
+// is the road surface; Vehicle.tsx adds its own rest height.
 export function getSpawnPose(): {
   position: [number, number, number];
   rotation: [number, number, number];
 } {
-  const p0 = TRACK_CURVE.getPointAt(0);
-  const p1 = TRACK_CURVE.getPointAt(0.005);
-  const forward = new THREE.Vector3().subVectors(p1, p0).normalize();
-  const yaw = Math.atan2(forward.x, forward.z); // R3F uses Y-up rotation
+  const p0 = TRACK_CURVE.getPointAt(SPAWN_T);
+  const tangent = TRACK_CURVE.getTangentAt(SPAWN_T);
+  const yaw = Math.atan2(tangent.x, tangent.z); // R3F uses Y-up rotation
   return {
-    position: [p0.x, p0.y + 1.5, p0.z],
+    position: [p0.x, p0.y + ROAD_THICKNESS, p0.z],
     rotation: [0, yaw, 0],
   };
 }

@@ -50,8 +50,8 @@ export function MiniMap({
       ctx.lineWidth = 5;
       ctx.stroke();
 
-      // 2. Draw Finish Line at t=0.5
-      const fin = TRACK_CURVE.getPointAt(0.5);
+      // 2. Draw the start/finish line at t=0
+      const fin = TRACK_CURVE.getPointAt(0);
       const fx = center + (fin.x / 170) * (size * scale);
       const fy = center + (fin.z / 170) * (size * scale);
       ctx.fillStyle = "#ff4444";

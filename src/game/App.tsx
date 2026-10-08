@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { Physics } from "@react-three/rapier";
 import { ACESFilmicToneMapping, SRGBColorSpace } from "three";
 import { Track } from "./Track";
 import { Vehicle, useKeyboardControls } from "./Vehicle";
@@ -10,12 +9,13 @@ import { Environment } from "./Environment";
 import { HUD, useNoScrollOnCanvas } from "./HUD";
 import { useGameStore } from "./useGameStore";
 import { audio } from "./audio";
+import { getSpawnPose } from "./trackCurve";
 
 // =====================================================================
 // App.tsx — Top-level scene composition:
 //   • Canvas with post-processing & tone mapping
 //   • Lighting & procedural sky
-//   • Rapier physics world with Track & Vehicle
+//   • Track & kinematic Vehicle (no physics engine)
 //   • 3D Particles (exhaust, nitro flames, speed streaks)
 //   • Environment (clouds, windmills, hot air balloons)
 //   • DOM HUD with Speedometer, Radar Mini-map, Modals
@@ -33,7 +33,7 @@ export function App() {
   useKeyboardControls(inputRef);
 
   // Shared kart transform refs for particles, mini-map, and camera
-  const kartPosRef = useRef(new THREE.Vector3(60, 6.7, 0));
+  const kartPosRef = useRef(new THREE.Vector3(...getSpawnPose().position));
   const kartQuatRef = useRef(new THREE.Quaternion());
   const kartYawRef = useRef(0);
   const collectedStarsRef = useRef<Set<number>>(new Set());
@@ -71,19 +71,17 @@ export function App() {
         />
         <hemisphereLight args={["#bde7ff", "#6c4a2a", 0.4]} />
 
-        <Physics gravity={[0, -14, 0]} colliders={false} timeStep={1 / 60}>
-          <Track />
-          <Environment />
-          <Vehicle
-            inputRef={inputRef}
-            kartPosRef={kartPosRef}
-            kartQuatRef={kartQuatRef}
-            kartYawRef={kartYawRef}
-            collectedStarsRef={collectedStarsRef}
-          />
-          <Particles kartPosRef={kartPosRef} kartQuatRef={kartQuatRef} />
-          <TimerDriver />
-        </Physics>
+        <Track />
+        <Environment />
+        <Vehicle
+          inputRef={inputRef}
+          kartPosRef={kartPosRef}
+          kartQuatRef={kartQuatRef}
+          kartYawRef={kartYawRef}
+          collectedStarsRef={collectedStarsRef}
+        />
+        <Particles kartPosRef={kartPosRef} kartQuatRef={kartQuatRef} />
+        <TimerDriver />
       </Canvas>
 
       <HUD

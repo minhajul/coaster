@@ -1,6 +1,6 @@
 # ChunkCoaster 🏎️🎢
 
-A fast-paced, voxel-style 3D roller-coaster kart racer built for the browser with **React Three Fiber**, **Rapier Physics**, and **Three.js**.
+A fast-paced, voxel-style 3D roller-coaster kart racer built for the browser with **React Three Fiber** and **Three.js**.
 
 Drive a high-speed voxel kart through a scenic roller-coaster track of rolling hills, sweeping banked turns, boost strips, bouncy mushrooms, and collectible stars — complete with real-time procedural WebAudio sound and particle effects!
 
@@ -8,11 +8,11 @@ Drive a high-speed voxel kart through a scenic roller-coaster track of rolling h
 
 ## 🎮 Features
 
-- **🏎️ Smooth 3D Roller-Coaster Physics**
-  - Continuous Rapier `TrimeshCollider` road ribbon and 3D volumetric guardrail barriers — zero edge-catching, no floor cracks.
-  - 3D slope-climbing vector projection so the kart climbs and descends steep inclines naturally.
-  - Bobsled-style guardrail banking and subtle curve-following assist for fluid, high-speed arcade racing.
-  - Lakitu-style recovery: if you ever leave the track, you safely respawn on the nearest track segment with your lap timer running.
+- **🏎️ Smooth 3D Roller-Coaster Handling**
+  - The kart rides the track spline kinematically: no physics engine, so it can never flip, sink, or get stuck.
+  - Climbs and descends hills naturally, with hops off boost strips and mushrooms.
+  - Guard rails are a soft clamp: scrape along them and you lose a little speed, never your momentum.
+  - Hands-off steering assist keeps young players on the road while manual steering always wins.
 
 - **🔊 100% Procedural WebAudio Synthesizer**
   - Zero external sound files — all audio is generated in real time using the browser WebAudio API!
@@ -86,7 +86,6 @@ Drive a high-speed voxel kart through a scenic roller-coaster track of rolling h
 
 - **Framework:** [React 18](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/)
 - **3D Graphics:** [Three.js](https://threejs.org/) + [@react-three/fiber](https://r3f.docs.pmnd.rs/) + [@react-three/drei](https://github.com/pmndrs/drei)
-- **Physics Engine:** [@react-three/rapier](https://github.com/pmndrs/react-three-rapier) (Rapier WASM physics)
 - **State Management:** [Zustand](https://zustand.docs.pmnd.rs/)
 - **Styling:** [Tailwind CSS](https://tailwindcss.com/)
 - **Audio:** WebAudio API (Procedural Synthesizer)
@@ -148,9 +147,9 @@ coaster/
     ├── main.tsx                # React application entry point
     ├── index.css               # Tailwind directives and base styles
     └── game/
-        ├── App.tsx             # Main canvas, lights, physics world, and HUD composition
-        ├── Track.tsx           # Track mesh ribbon, 3D trimesh rail colliders, boost pads, stars
-        ├── Vehicle.tsx         # Kart physics body, slope logic, wheels, driver, and camera controls
+        ├── App.tsx             # Main canvas, lights, scene and HUD composition
+        ├── Track.tsx           # Track mesh ribbon, rails, boost pads, stars, finish line
+        ├── Vehicle.tsx         # Kinematic kart controller, wheels, driver, and camera
         ├── audio.ts            # Procedural WebAudio sound synthesizer
         ├── Particles.tsx       # Exhaust smoke, nitro flame bursts, and 3D speed streaks
         ├── MiniMap.tsx         # Real-time 2D radar mini-map
