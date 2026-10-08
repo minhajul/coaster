@@ -45,12 +45,14 @@ const TURN_RATE = 2.1; // rad/s at full steering lock
 const ASSIST_ALIGN = 3.2; // 1/s, how fast the kart lines up with the road
 const ASSIST_CENTER = 0.4; // rad, extra steer toward the centre line at the edge
 const MAX_LATERAL = TRACK_HALF_WIDTH - 1.15; // keeps the wheels inside the rails
-const WALL_SCRAPE = 2.5; // speed loss factor per unit of "into-wall" heading
+const WALL_SCRAPE = 1.5; // speed loss factor per unit of "into-wall" heading
 const REST_HEIGHT = 0.48; // kart origin above the road surface (wheels touch)
 const GRAVITY = 24; // m/s², hop gravity (arcade, heavier than real)
 const MUSHROOM_HOP_VY = 9.5; // m/s upward hop
 const BOOST_HOP_VY = 3.2;
-const BOOST_DURATION = 1.5;
+const BOOST_DURATION = 1.6;
+const BOOST_COOLDOWN_MS = 3000; // a strip re-arms after this, so it works every lap
+const BOOST_FADE_TIME = 1.6; // s, easing back down to normal top speed
 const MUSHROOM_RADIUS_SQ = 2.4 * 2.4;
 const MUSHROOM_COOLDOWN_MS = 1200;
 const STAR_PICKUP_RADIUS = 2.6;
@@ -110,7 +112,7 @@ export function Vehicle({
     boostTimer: 0,
     scraping: false,
   });
-  const consumedBoostsRef = useRef<Set<number>>(new Set());
+  const boostHitAtRef = useRef<Map<number, number>>(new Map());
   const consumedMushroomAtRef = useRef<Map<number, number>>(new Map());
   const lastProgressRef = useRef(0);
   const reachedPreFinishRef = useRef(false);
@@ -140,7 +142,7 @@ export function Vehicle({
     s.boostTimer = 0;
     s.scraping = false;
     activeCollectedStars.current.clear();
-    consumedBoostsRef.current = new Set();
+    boostHitAtRef.current = new Map();
     consumedMushroomAtRef.current = new Map();
     lastProgressRef.current = 0;
     reachedPreFinishRef.current = false;
@@ -213,7 +215,13 @@ export function Vehicle({
       let tau = COAST_TIME;
       if (isRacing && input.forward && !input.reverse) {
         target = topSpeed;
-        tau = isBoosted ? BOOST_ACCEL_TIME : ACCEL_TIME;
+        // Accelerate briskly, but when a boost has just expired let the
+        // extra speed bleed off slowly instead of braking to top speed.
+        tau = isBoosted
+          ? BOOST_ACCEL_TIME
+          : s.speed > topSpeed
+            ? BOOST_FADE_TIME
+            : ACCEL_TIME;
       } else if (isRacing && input.reverse) {
         // Brake hard to a stop first, then back up. Aiming slightly
         // below zero guarantees the exponential approach actually
@@ -325,12 +333,13 @@ export function Vehicle({
 
       // ---- Boost strips ----
       for (let i = 0; i < BOOST_POSITIONS.length; i++) {
-        if (consumedBoostsRef.current.has(i)) continue;
         const bp = BOOST_POSITIONS[i];
         const bdx = bp.x - s.pos.x;
         const bdz = bp.z - s.pos.z;
         if (bdx * bdx + bdz * bdz < BOOST_ACCEPT_RADIUS_SQ && !s.airborne) {
-          consumedBoostsRef.current.add(i);
+          const now = performance.now();
+          if (now - (boostHitAtRef.current.get(i) ?? 0) < BOOST_COOLDOWN_MS) continue;
+          boostHitAtRef.current.set(i, now);
           s.boostTimer = BOOST_DURATION;
           s.speed = Math.max(s.speed, MAX_SPEED * 0.9);
           s.airborne = true;

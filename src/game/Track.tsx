@@ -5,6 +5,7 @@ import { useGameStore } from "./useGameStore";
 import {
   CONTROL_POINTS,
   CURVE_SAMPLES,
+  progressAlongTrack,
   RAIL_HEIGHT,
   RAIL_THICKNESS,
   ROAD_THICKNESS,
@@ -523,18 +524,16 @@ function MushroomMesh({
 // for distance-based activation. Single source of truth = boost always
 // fires when crossing a visible strip.
 // ---------------------------------------------------------------------
+// Boost strips are spaced evenly around the loop (not randomly) so the
+// pace feels the same on every part of the lap: a burst roughly every
+// 65 m, with the first one well clear of the spawn zone. Strips re-arm
+// after a cooldown (see Vehicle.tsx) so they work on every lap.
 export const BOOST_POSITIONS: THREE.Vector3[] = (() => {
-  const rng = mulberry32(7);
   const out: THREE.Vector3[] = [];
-  const stride = 50;
-  // Skip the first SKIP_START samples so the kart's spawn zone (around
-  // sample 0) is obstacle-free. The kart needs ~1 second of clean road
-  // to get up to speed before hitting its first boost/star.
+  const stride = 100;
   const SKIP_START = 80;
-  for (let i = SKIP_START; i < CURVE_SAMPLES.length; i += stride) {
-    if (rng() < 0.55) {
-      out.push(TRACK_CURVE.getPointAt(i / CURVE_SAMPLES.length).clone());
-    }
+  for (let i = SKIP_START; i < CURVE_SAMPLES.length - 20; i += stride) {
+    out.push(TRACK_CURVE.getPointAt(i / CURVE_SAMPLES.length).clone());
   }
   return out;
 })();
@@ -543,12 +542,7 @@ function BoostStrips() {
   return (
     <>
       {BOOST_POSITIONS.map((pos, i) => {
-        const tangent = TRACK_CURVE.getTangentAt(
-          // Reverse-engineer t from the array index. This is a known
-          // approximation but visually it matches the strip orientation.
-          // The position is exact because we cloned from the curve.
-          ((i + 1) * 50) / CURVE_SAMPLES.length,
-        ).normalize();
+        const tangent = TRACK_CURVE.getTangentAt(progressAlongTrack(pos)).normalize();
         const right = new THREE.Vector3()
           .crossVectors(tangent, new THREE.Vector3(0, 1, 0))
           .normalize();

@@ -42,7 +42,7 @@ Entry is `src/main.tsx` → `src/game/App.tsx`. Everything lives in `src/game/`.
 
 `trackCurve.ts` builds a closed centripetal CatmullRom loop at module load and exports `TRACK_CURVE`, `CURVE_SAMPLES`, width/thickness constants, `progressAlongTrack()`, `SPAWN_T`, and `getSpawnPose()`. Both `Track.tsx` (road mesh, rails, item placement, start/finish line at t=0) and `Vehicle.tsx` (road height, tangent, lateral clamp) derive from it. Change track shape or dimensions only there. The kart spawns at `SPAWN_T` (just past the line) so the finish banner is behind the player at the start.
 
-Item positions (`STAR_POSITIONS`, `BOOST_POSITIONS`, `MUSHROOM_POSITIONS`) are module-level constants in `Track.tsx`, placed along the curve with seeded `mulberry32` RNG so layouts are deterministic. `Vehicle.tsx` imports them and does pickup detection by distance checks each frame. Mushrooms sit just outside the rails, so they only trigger when the kart is scraping the edge.
+Item positions (`STAR_POSITIONS`, `BOOST_POSITIONS`, `MUSHROOM_POSITIONS`) are module-level constants in `Track.tsx`. Stars and mushrooms are placed with seeded `mulberry32` RNG so layouts are deterministic; boost strips are spaced evenly (every 100 samples) and re-arm after `BOOST_COOLDOWN_MS`, so they fire on every lap. Boost adds speed for `BOOST_DURATION` and then bleeds off over `BOOST_FADE_TIME` rather than braking back to top speed. `Vehicle.tsx` imports them and does pickup detection by distance checks each frame. Mushrooms sit just outside the rails, so they only trigger when the kart is scraping the edge.
 
 ### The kart is kinematic, on purpose
 
@@ -67,4 +67,4 @@ Driving keys (WASD/arrows/Space) mutate `inputRef` via `useKeyboardControls` in 
 
 ### Styling
 
-Tailwind with a custom `font-chunky` (Fredoka, loaded in `src/index.css`) and `cart.{red,yellow,blue,green,purple}` colors from `tailwind.config.js`. The page is fixed full-viewport with scrolling and touch gestures disabled. The HUD top bar uses `sm:` breakpoints to fit a 390px phone; the speedometer and keyboard hint are desktop-only (`md:`), the touch buttons mobile-only.
+Tailwind with a custom `font-chunky` (Fredoka, loaded in `src/index.css`) and `cart.{red,yellow,blue,green,purple}` colors from `tailwind.config.js`. The page is fixed full-viewport with scrolling and touch gestures disabled. The HUD top bar uses `sm:` breakpoints to fit a 390px phone. Input-specific UI switches on pointer type, not width: custom `touch:` (`pointer: coarse`) and `mouse:` variants in `tailwind.config.js` show the touch buttons on phones in any orientation and the speedometer, keyboard hints, and key labels only with a mouse. Modals are scrollable (`data-scrollable` opts them out of the global touch-move blocker) so the start card is reachable in phone landscape. Tailwind config changes need a dev-server restart.

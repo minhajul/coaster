@@ -27,5 +27,13 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // Pointer-based variants: a phone in landscape is wider than the
+    // `md` breakpoint but still needs touch controls, so input UI is
+    // switched on pointer type rather than viewport width.
+    function ({ addVariant }) {
+      addVariant("touch", "@media (pointer: coarse)");
+      addVariant("mouse", "@media (pointer: fine), (pointer: none)");
+    },
+  ],
 };

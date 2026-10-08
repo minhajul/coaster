@@ -254,13 +254,13 @@ export function HUD({
       </div>
 
       {/* ===================== BOTTOM LEFT: SPEEDOMETER ===================== */}
-      <div className="pointer-events-auto absolute bottom-4 left-4 hidden md:block">
+      <div className="pointer-events-auto absolute bottom-4 left-4 hidden mouse:block">
         <Speedometer speedKmh={speedKmh} isBoosted={isBoosted} />
       </div>
 
       {/* ===================== TOUCH CONTROLS (Mobile) ===================== */}
       <div
-        className="absolute bottom-0 left-0 right-0 flex items-end justify-between gap-3 px-4 pb-4 md:hidden"
+        className="absolute bottom-0 left-0 right-0 hidden items-end justify-between gap-3 px-4 pb-4 touch:flex"
         style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
       >
         {/* Reverse / Brake */}
@@ -296,7 +296,7 @@ export function HUD({
       </div>
 
       {/* ===================== DESKTOP HINT ===================== */}
-      <div className="absolute bottom-3 right-4 hidden rounded-xl border border-white/20 bg-black/50 px-3.5 py-2 text-xs font-semibold text-white/90 shadow-lg backdrop-blur md:block">
+      <div className="absolute bottom-3 right-4 hidden rounded-xl border border-white/20 bg-black/50 px-3.5 py-2 text-xs font-semibold text-white/90 shadow-lg backdrop-blur mouse:block">
         <b>WASD</b> Drive · <b>Space</b> Brake · <b>C</b> Camera · <b>M</b> Audio · <b>R</b> Restart · <b>P</b> Pause
       </div>
 
@@ -450,8 +450,8 @@ function StartModal({
 }) {
   return (
     <ModalShell>
-      <div className="mb-2 text-6xl animate-bounce">🏎️</div>
-      <h1 className="mb-1 text-4xl font-black tracking-tight text-white drop-shadow-md">
+      <div className="mb-1 text-5xl animate-bounce sm:mb-2 sm:text-6xl">🏎️</div>
+      <h1 className="mb-1 text-3xl font-black tracking-tight text-white drop-shadow-md sm:text-4xl">
         ChunkCoaster
       </h1>
       <p className="mb-3 text-sm font-medium text-white/90">
@@ -471,7 +471,10 @@ function StartModal({
         </div>
       )}
 
-      <div className="mb-5 flex flex-wrap items-center justify-center gap-2 text-xs text-white/80">
+      <div className="mb-4 hidden text-xs font-semibold text-white/80 touch:block">
+        👆 Use the on-screen buttons to drive, brake and steer
+      </div>
+      <div className="mb-5 hidden flex-wrap items-center justify-center gap-2 text-xs text-white/80 mouse:flex">
         <Key>W</Key>
         <Key>A</Key>
         <Key>S</Key>
@@ -492,7 +495,7 @@ function StartModal({
         }}
         className="w-full rounded-2xl bg-emerald-500 py-4 text-2xl font-black text-white shadow-xl transition-all hover:bg-emerald-600 hover:scale-105 active:scale-95"
       >
-        START RACE (Space)
+        START RACE<span className="hidden mouse:inline"> (Space)</span>
       </button>
     </ModalShell>
   );
@@ -541,7 +544,7 @@ function WinModal({
         onClick={onRestart}
         className="w-full rounded-2xl bg-yellow-400 py-4 text-2xl font-black text-yellow-950 shadow-xl transition-all hover:bg-yellow-500 hover:scale-105 active:scale-95"
       >
-        RACE AGAIN (Space)
+        RACE AGAIN<span className="hidden mouse:inline"> (Space)</span>
       </button>
     </ModalShell>
   );
@@ -576,7 +579,7 @@ function LoseModal({
         onClick={onRestart}
         className="w-full rounded-2xl bg-pink-500 py-4 text-2xl font-black text-white shadow-xl transition-all hover:bg-pink-600 hover:scale-105 active:scale-95"
       >
-        TRY AGAIN (Space)
+        TRY AGAIN<span className="hidden mouse:inline"> (Space)</span>
       </button>
     </ModalShell>
   );
@@ -598,13 +601,13 @@ function PauseModal({
           onClick={onResume}
           className="rounded-2xl bg-emerald-500 py-3.5 text-xl font-bold text-white shadow-lg transition-all hover:bg-emerald-600"
         >
-          ▶ RESUME (P)
+          ▶ RESUME<span className="hidden mouse:inline"> (P)</span>
         </button>
         <button
           onClick={onRestart}
           className="rounded-2xl bg-pink-500 py-3 text-lg font-bold text-white shadow-lg transition-all hover:bg-pink-600"
         >
-          ↻ RESTART (R)
+          ↻ RESTART<span className="hidden mouse:inline"> (R)</span>
         </button>
       </div>
     </ModalShell>
@@ -613,8 +616,15 @@ function PauseModal({
 
 function ModalShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/60 p-4 backdrop-blur-md">
-      <div className="w-full max-w-sm rounded-3xl border-4 border-white/40 bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-6 text-center text-white shadow-2xl">
+    // Scrollable so the card is always reachable on short screens
+    // (phone landscape). data-scrollable lets touch scrolling through
+    // the global touchmove blocker in useNoScrollOnCanvas.
+    <div
+      data-scrollable
+      className="pointer-events-auto absolute inset-0 flex justify-center overflow-y-auto bg-black/60 p-3 backdrop-blur-md sm:p-4"
+      style={{ touchAction: "pan-y", WebkitOverflowScrolling: "touch" }}
+    >
+      <div className="my-auto w-full max-w-sm rounded-3xl border-4 border-white/40 bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 p-4 text-center text-white shadow-2xl sm:p-6">
         {children}
       </div>
     </div>
@@ -632,7 +642,8 @@ function Key({ children }: { children: React.ReactNode }) {
 export function useNoScrollOnCanvas() {
   useEffect(() => {
     const prevent = (e: TouchEvent) => {
-      if ((e.target as HTMLElement)?.closest("button")) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("button") || el?.closest("[data-scrollable]")) return;
       e.preventDefault();
     };
     const opts = { passive: false } as const;
