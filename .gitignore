@@ -23,11 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-# Rapier WASM
-node_modules/@dimforge/rapier3d-compat/rapier_wasm3d_bg.wasm
-node_modules/.cache
-
-
 # Cloudflare
 .cloudflare/
 .dev.vars
