@@ -8,6 +8,7 @@ export default defineConfig({
     name: "chunkcoaster",
     compatibilityDate: "2026-10-01",
     observability: { enabled: true },
+    previewUrls: false,
     assets: {
       notFoundHandling: "single-page-application",
     },
