@@ -7,7 +7,7 @@ export default defineConfig({
   worker: {
     name: "chunkcoaster",
     compatibilityDate: "2026-10-01",
-    observability: { enabled: true },
+    observability: { enabled: false },
     previewUrls: false,
     assets: {
       notFoundHandling: "single-page-application",
